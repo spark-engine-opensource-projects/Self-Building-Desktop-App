@@ -1,7 +1,8 @@
 
             const { Chart, registerables } = require('chart.js');
-            Chart.register(...registerables);
-
+            // console.log(registerables)
+            // Chart.register(...registerables);
+            
             // Create a new div element
             const newDiv = document.createElement('div');
             newDiv.id = 'chart-container';
@@ -9,8 +10,7 @@
             newDiv.style.height = '400px';
             
             const resultElement = document.getElementById('result');
-            resultElement.textContent += '
-This is inside the executing script';
+            resultElement.textContent += 'This is inside the executing script';
 
             // Create a canvas element and append it to the new div
             const canvas = document.createElement('canvas');
