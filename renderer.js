@@ -2,96 +2,53 @@ const { exec } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
-// async function fetchPackageData(prompt) {
-//     const API_URL = "https://sparkengine.ai/api/engine/completion"
-//     const response = await fetch(API_URL, {
-//         method: "POST",
-//         headers: {
-//           "Content-Type": "application/json",
-//         },
-//         body: JSON.stringify({
-//           apiKey: "",
-//           ProjectId: "",
-//           prompt: prompt,
-//         }),
-//       });
-
-//       if (!response.ok) {
-//         throw new Error(`Error: ${response.status}`);
-//       }
-
-//       const data = await response.json();
-//       console.log(data);
-//       return data
-// }
-
 async function fetchPackageData(prompt) {
-    return {
-        "packages": {
-            "chart.js": "@3.7.0"
+    const API_URL = "https://sparkengine.ai/api/engine/completion";
+    const response = await fetch(API_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
         },
-        "implementation_code": `
-            const { Chart, registerables } = require('chart.js');
-            // console.log(registerables)
-            // Chart.register(...registerables);
-            
-            // Create a new div element
-            const newDiv = document.createElement('div');
-            newDiv.id = 'chart-container';
-            newDiv.style.width = '400px';
-            newDiv.style.height = '400px';
-            
-            const resultElement = document.getElementById('result');
-            resultElement.textContent += 'This is inside the executing script';
+        body: JSON.stringify({
+          apiKey: "",
+          ProjectId: "84098539-5f1c-4a3c-9804-d60f1b47cbf9",
+          prompt: prompt,
+        }),
+      });
 
-            // Create a canvas element and append it to the new div
-            const canvas = document.createElement('canvas');
-            canvas.id = 'myNewChart';
-            canvas.width = 400;
-            canvas.height = 400;
-            newDiv.appendChild(canvas);
+      if (!response.ok) {
+        throw new Error(`Error: ${response.status}`);
+      }
 
-            // Append the new div to the body of the document
-            document.body.appendChild(newDiv);
+      const data = await response.json();
+      
+      let implementationCode = '';
+      let packages = [];
 
-            // Context for the new chart
-            const ctx = canvas.getContext('2d');
-            const myChart = new Chart(ctx, {
-                type: 'pie',
-                data: {
-                    labels: ['Red', 'Blue', 'Yellow', 'Green', 'Purple', 'Orange'],
-                    datasets: [{
-                        label: '# of Votes',
-                        data: [12, 19, 3, 5, 2, 3],
-                        backgroundColor: [
-                            'rgba(255, 99, 132, 0.2)',
-                            'rgba(54, 162, 235, 0.2)',
-                            'rgba(255, 206, 86, 0.2)',
-                            'rgba(75, 192, 192, 0.2)',
-                            'rgba(153, 102, 255, 0.2)',
-                            'rgba(255, 159, 64, 0.2)'
-                        ],
-                        borderColor: [
-                            'rgba(255, 99, 132, 1)',
-                            'rgba(54, 162, 235, 1)',
-                            'rgba(255, 206, 86, 1)',
-                            'rgba(75, 192, 192, 1)',
-                            'rgba(153, 102, 255, 1)',
-                            'rgba(255, 159, 64, 1)'
-                        ],
-                        borderWidth: 1
-                    }]
-                },
-                options: {
-                    responsive: true
-                }
-            });
-            console.log('New div created, chart rendered!');
-        `
-    }
+      data.data.forEach(item => {
+        if (item.name.startsWith('implementation_code')) {
+          implementationCode = item.output.replace(/```.*\n/, '').replace(/```$/, '');
+        } else if (item.name.startsWith('packages')) {
+          const packageString = item.output.replace(/```.*\n/, '').replace(/```$/, '');
+          const packageArrayMatch = packageString.match(/\[.*\]/s); // Use regex to find array
+          if (packageArrayMatch) {
+            try {
+              packages = JSON.parse(packageArrayMatch[0]);
+            } catch (error) {
+              console.error('Error parsing packages JSON:', error);
+              packages = [];
+            }
+          }
+        }
+      });
 
+      const result = {
+        "packages": packages,
+        "implementation_code": implementationCode
+      };
+
+      return result;
 }
-
 
 // Function to install a package
 function installPackage(packageName, version) {
@@ -134,10 +91,8 @@ function loadScriptFromClient(scriptUrl) {
 
 // Function to dynamically load and execute code
 async function loadAndExecute(packages, implementationCode, scriptPath) {
-    const spinner = document.getElementById('spinner');
     const resultElement = document.getElementById('result');
 
-    spinner.style.display = 'block';
     resultElement.textContent = 'Installing packages and preparing code...\n';
 
     try {
@@ -164,7 +119,13 @@ async function loadAndExecute(packages, implementationCode, scriptPath) {
 
 document.getElementById('submitPrompt').addEventListener('click', async () => {
     const prompt = document.getElementById("userPrompt").value
+
+    const spinner = document.getElementById('spinner');
+    spinner.style.display = 'block';
+
     const data = await fetchPackageData(prompt);
+
     const { packages, implementation_code } = data;
+
     await loadAndExecute(packages, implementation_code, "./test.js");
 });

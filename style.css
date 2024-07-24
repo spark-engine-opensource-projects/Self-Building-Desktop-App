@@ -13,3 +13,48 @@
     0% { transform: rotate(0deg); }
     100% { transform: rotate(360deg); }
 }
+
+body {
+    font-family: Arial, sans-serif; /* Ensures a clean, modern font is used */
+    padding: 20px; /* Adds padding around the content for better spacing */
+}
+
+h1 {
+    color: #333; /* A darker text color for better readability */
+    text-align: center; /* Centers the title */
+}
+
+textarea#userPrompt {
+    width: 100%; /* Makes the textarea 80% of the width of its container */
+    height: 100px; /* Sets an initial height for the textarea */
+    padding: 10px;
+    font-size: 18px;
+    margin-bottom: 10px;
+    box-sizing: border-box;
+    resize: vertical; /* Allows the user to resize the textarea vertically */
+}
+
+button#submitPrompt {
+    width: 100%; /* Makes the button take full width of its container */
+    padding: 15px 10px; /* Adds padding to increase the button's height */
+    font-size: 18px; /* Increases the font size for better readability */
+    background-color: #007BFF; /* A pleasant blue background color */
+    color: white; /* White text color for contrast */
+    border: none; /* Removes the default border */
+    cursor: pointer; /* Changes the mouse cursor to a pointer on hover */
+    transition: background-color 0.3s; /* Smooth transition for hover effect */
+}
+
+button#submitPrompt:hover {
+    background-color: #0056b3; /* Darker shade of blue on hover for a visual feedback */
+}
+
+div#result {
+    margin-top: 20px; /* Adds space above the result area */
+    font-size: 16px; /* Sets a readable default font size for results */
+}
+
+#output {
+    margin-top: 20px; /* Adds space above the output area */
+    font-size: 16px; /* Sets a readable default font size for the output */
+}
