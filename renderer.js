@@ -10,7 +10,7 @@ async function fetchPackageData(prompt) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          apiKey: "se-8da20f2f-a737-4d8c-96ff78afe455f5ae",
+          apiKey: "<YOUR SPARK ENGINE API KEY HERE>",
           ProjectId: "84098539-5f1c-4a3c-9804-d60f1b47cbf9",
           prompt: prompt,
         }),
