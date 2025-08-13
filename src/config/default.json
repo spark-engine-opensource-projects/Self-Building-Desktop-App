@@ -1,0 +1,33 @@
+{
+  "execution": {
+    "maxConcurrentExecutions": 3,
+    "executionTimeout": 30000,
+    "maxMemoryMB": 512,
+    "maxOutputSize": 1048576,
+    "maxDiskSpaceMB": 100
+  },
+  "security": {
+    "enableResourceMonitoring": true,
+    "logAllExecutions": true,
+    "blockSuspiciousPackages": false,
+    "maxPromptLength": 10000,
+    "requireApiKeyFile": false
+  },
+  "monitoring": {
+    "healthCheckInterval": 10000,
+    "maxLogFileSize": 10485760,
+    "maxLogFiles": 5,
+    "enableMetrics": true
+  },
+  "ai": {
+    "model": "claude-3-5-sonnet-20241022",
+    "temperature": 0.7,
+    "maxTokens": 2000,
+    "enableCodeValidation": true
+  },
+  "ui": {
+    "enableDevTools": false,
+    "autoSavePrompts": true,
+    "maxHistoryItems": 50
+  }
+}

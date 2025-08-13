@@ -1,1 +1,73 @@
-/node_modules
+# Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build outputs
+dist/
+build/
+out/
+*.unpacked/
+
+# Temporary files
+temp/
+tmp/
+*.tmp
+*.temp
+
+# Logs
+logs/
+*.log
+combined.log
+error.log
+
+# Environment and config
+.env
+.env.local
+.env.*.local
+config.local.json
+*.key
+*.pem
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*.swn
+.DS_Store
+Thumbs.db
+
+# Session data
+session-history.json
+sessions/
+cache/
+
+# API Keys - NEVER commit these
+api-key.txt
+anthropic-key.txt
+*-api-key.txt
+
+# OS Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+
+# Electron
+electron-builder.yml
+electron-builder.json5
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Package lock files (optional - uncomment if you want to exclude)
+# package-lock.json
+# yarn.lock
+
+# User data
+userData/
