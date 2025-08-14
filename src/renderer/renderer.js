@@ -1,3 +1,6 @@
+// Import conditional logger for development
+const rendererLogger = require('../utils/rendererLogger');
+
 class DynamicAppRenderer {
     constructor() {
         this.currentSession = null;
@@ -18,9 +21,9 @@ class DynamicAppRenderer {
         // Load the secure DOM executor
         if (typeof SecureDOMExecutor !== 'undefined') {
             this.secureDOMExecutor = new SecureDOMExecutor();
-            console.log('Secure DOM executor initialized');
+            rendererLogger.debug('Secure DOM executor initialized');
         } else {
-            console.warn('SecureDOMExecutor not available, falling back to basic execution');
+            rendererLogger.warn('SecureDOMExecutor not available, falling back to basic execution');
         }
     }
 
@@ -61,6 +64,60 @@ class DynamicAppRenderer {
         this.themeToggle = document.getElementById('themeToggle');
         this.sunIcon = document.getElementById('sunIcon');
         this.moonIcon = document.getElementById('moonIcon');
+        
+        // Database elements
+        this.toggleDatabaseBtn = document.getElementById('toggleDatabaseBtn');
+        this.databaseSection = document.getElementById('databaseSection');
+        
+        // Performance dashboard
+        this.performanceDashboardBtn = document.getElementById('performanceDashboardBtn');
+        this.showDbManagerBtn = document.getElementById('showDbManagerBtn');
+        this.showSchemaGeneratorBtn = document.getElementById('showSchemaGeneratorBtn');
+        
+        // Database Manager
+        this.databaseManager = document.getElementById('databaseManager');
+        this.databaseSelect = document.getElementById('databaseSelect');
+        this.newDatabaseName = document.getElementById('newDatabaseName');
+        this.createDatabaseBtn = document.getElementById('createDatabaseBtn');
+        this.refreshDatabasesBtn = document.getElementById('refreshDatabasesBtn');
+        this.tablesList = document.getElementById('tablesList');
+        this.createTableBtn = document.getElementById('createTableBtn');
+        this.exportDatabaseBtn = document.getElementById('exportDatabaseBtn');
+        this.dataPanel = document.getElementById('dataPanel');
+        this.currentTableName = document.getElementById('currentTableName');
+        this.addRecordBtn = document.getElementById('addRecordBtn');
+        this.refreshDataBtn = document.getElementById('refreshDataBtn');
+        this.queryBuilderBtn = document.getElementById('queryBuilderBtn');
+        this.dataTable = document.getElementById('dataTable');
+        
+        // Schema Generator
+        this.schemaGenerator = document.getElementById('schemaGenerator');
+        this.schemaDescription = document.getElementById('schemaDescription');
+        this.generateSchemaBtn = document.getElementById('generateSchemaBtn');
+        this.generateScriptBtn = document.getElementById('generateScriptBtn');
+        this.schemaOutput = document.getElementById('schemaOutput');
+        this.implementSchemaBtn = document.getElementById('implementSchemaBtn');
+        this.suggestImprovementsBtn = document.getElementById('suggestImprovementsBtn');
+        
+        // Query Builder
+        this.queryBuilder = document.getElementById('queryBuilder');
+        this.closeQueryBuilderBtn = document.getElementById('closeQueryBuilderBtn');
+        this.queryType = document.getElementById('queryType');
+        this.addConditionBtn = document.getElementById('addConditionBtn');
+        this.executeQueryBtn = document.getElementById('executeQueryBtn');
+        this.generatedSQL = document.getElementById('generatedSQL');
+        
+        // Data Form Modal
+        this.dataFormModal = document.getElementById('dataFormModal');
+        this.dataForm = document.getElementById('dataForm');
+        this.closeFormBtn = document.getElementById('closeFormBtn');
+        this.cancelFormBtn = document.getElementById('cancelFormBtn');
+        
+        // Database state
+        this.currentDatabase = null;
+        this.currentTable = null;
+        this.currentSchema = null;
+        this.generatedSchema = null;
     }
 
     setupEventListeners() {
@@ -84,6 +141,45 @@ class DynamicAppRenderer {
                 this.handleGenerateCode();
             }
         });
+        
+        // Database event listeners
+        this.toggleDatabaseBtn.addEventListener('click', () => this.toggleDatabaseSection());
+        this.performanceDashboardBtn.addEventListener('click', () => this.openPerformanceDashboard());
+        this.showDbManagerBtn.addEventListener('click', () => this.showDatabaseManager());
+        this.showSchemaGeneratorBtn.addEventListener('click', () => this.showSchemaGenerator());
+        
+        // Database Manager
+        this.databaseSelect.addEventListener('change', () => this.handleDatabaseChange());
+        this.createDatabaseBtn.addEventListener('click', () => this.handleCreateDatabase());
+        this.refreshDatabasesBtn.addEventListener('click', () => this.loadDatabases());
+        this.createTableBtn.addEventListener('click', () => this.showCreateTableDialog());
+        this.exportDatabaseBtn.addEventListener('click', () => this.handleExportDatabase());
+        this.addRecordBtn.addEventListener('click', () => this.showAddRecordForm());
+        this.refreshDataBtn.addEventListener('click', () => this.loadTableData());
+        this.queryBuilderBtn.addEventListener('click', () => this.showQueryBuilder());
+        
+        // Schema Generator
+        this.generateSchemaBtn.addEventListener('click', () => this.handleGenerateSchema());
+        this.generateScriptBtn.addEventListener('click', () => this.handleGenerateScript());
+        this.implementSchemaBtn.addEventListener('click', () => this.handleImplementSchema());
+        this.suggestImprovementsBtn.addEventListener('click', () => this.handleSuggestImprovements());
+        
+        // Query Builder
+        this.closeQueryBuilderBtn.addEventListener('click', () => this.hideQueryBuilder());
+        this.addConditionBtn.addEventListener('click', () => this.addQueryCondition());
+        this.executeQueryBtn.addEventListener('click', () => this.executeCustomQuery());
+        
+        // Modal handlers
+        this.closeFormBtn.addEventListener('click', () => this.hideDataForm());
+        this.cancelFormBtn.addEventListener('click', () => this.hideDataForm());
+        this.dataForm.addEventListener('submit', (e) => this.handleFormSubmit(e));
+        
+        // Tab switching for schema output
+        document.addEventListener('click', (e) => {
+            if (e.target.matches('.tab-btn')) {
+                this.switchSchemaTab(e.target.dataset.tab);
+            }
+        });
     }
 
     updateUI() {
@@ -98,6 +194,18 @@ class DynamicAppRenderer {
             this.executionResults.style.display = 'none';
             this.apiStatus.textContent = 'Not Configured';
             this.apiStatus.classList.remove('connected');
+        }
+    }
+
+    async openPerformanceDashboard() {
+        try {
+            const result = await window.electronAPI.openPerformanceDashboard();
+            if (!result.success) {
+                this.showNotification('Failed to open performance dashboard: ' + result.error, 'error');
+            }
+        } catch (error) {
+            this.showNotification('Failed to open performance dashboard', 'error');
+            console.error('Performance dashboard error:', error);
         }
     }
 
@@ -202,12 +310,19 @@ class DynamicAppRenderer {
             progressDiv = document.createElement('div');
             progressDiv.id = 'generation-progress';
             progressDiv.className = 'generation-progress';
-            progressDiv.innerHTML = `
-                <div class="progress-content">
-                    <div class="progress-spinner"></div>
-                    <span class="progress-message">${message}</span>
-                </div>
-            `;
+            const progressContent = document.createElement('div');
+            progressContent.className = 'progress-content';
+            
+            const spinner = document.createElement('div');
+            spinner.className = 'progress-spinner';
+            
+            const messageSpan = document.createElement('span');
+            messageSpan.className = 'progress-message';
+            messageSpan.textContent = message;
+            
+            progressContent.appendChild(spinner);
+            progressContent.appendChild(messageSpan);
+            progressDiv.appendChild(progressContent);
             document.querySelector('.container').appendChild(progressDiv);
         } else {
             progressDiv.querySelector('.progress-message').textContent = message;
@@ -225,17 +340,33 @@ class DynamicAppRenderer {
     showGenerationMetadata(metadata) {
         const metadataDiv = document.createElement('div');
         metadataDiv.className = 'generation-metadata';
-        metadataDiv.innerHTML = `
-            <div class="metadata-item">
-                <strong>Processing Time:</strong> ${metadata.processingTime}ms
-            </div>
-            ${metadata.retryCount > 0 ? `<div class="metadata-item">
-                <strong>Retry Count:</strong> ${metadata.retryCount}
-            </div>` : ''}
-            ${metadata.enhanced ? `<div class="metadata-item">
-                <strong>Enhanced:</strong> ✅ Code quality improvements applied
-            </div>` : ''}
-        `;
+        const processingTimeDiv = document.createElement('div');
+        processingTimeDiv.className = 'metadata-item';
+        const timeStrong = document.createElement('strong');
+        timeStrong.textContent = 'Processing Time: ';
+        processingTimeDiv.appendChild(timeStrong);
+        processingTimeDiv.appendChild(document.createTextNode(`${metadata.processingTime}ms`));
+        metadataDiv.appendChild(processingTimeDiv);
+        
+        if (metadata.retryCount > 0) {
+            const retryDiv = document.createElement('div');
+            retryDiv.className = 'metadata-item';
+            const retryStrong = document.createElement('strong');
+            retryStrong.textContent = 'Retry Count: ';
+            retryDiv.appendChild(retryStrong);
+            retryDiv.appendChild(document.createTextNode(metadata.retryCount));
+            metadataDiv.appendChild(retryDiv);
+        }
+        
+        if (metadata.enhanced) {
+            const enhancedDiv = document.createElement('div');
+            enhancedDiv.className = 'metadata-item';
+            const enhancedStrong = document.createElement('strong');
+            enhancedStrong.textContent = 'Enhanced: ';
+            enhancedDiv.appendChild(enhancedStrong);
+            enhancedDiv.appendChild(document.createTextNode('✅ Code quality improvements applied'));
+            metadataDiv.appendChild(enhancedDiv);
+        }
         
         const codeInfo = document.querySelector('.code-info');
         codeInfo.appendChild(metadataDiv);
@@ -328,7 +459,7 @@ class DynamicAppRenderer {
             
             this.showNotification(`Thank you for your feedback! (${rating === 'good' ? '👍' : '👎'})`, 'info');
         } catch (error) {
-            console.warn('Failed to submit feedback:', error);
+            rendererLogger.warn('Failed to submit feedback:', error);
         }
     }
 
@@ -414,7 +545,7 @@ class DynamicAppRenderer {
             try {
                 await window.electronAPI.cleanupSession(this.currentSession);
             } catch (error) {
-                console.warn('Failed to cleanup old session:', error);
+                rendererLogger.warn('Failed to cleanup old session:', error);
             }
         }
 
@@ -445,7 +576,7 @@ class DynamicAppRenderer {
                 return await this.executeFunctionBased(code);
             }
         } catch (error) {
-            console.error('Secure DOM execution failed:', error);
+            rendererLogger.error('Secure DOM execution failed:', error);
             return {
                 success: false,
                 error: error.message,
@@ -776,6 +907,352 @@ const notificationStyles = `
 }
 `;
 
+    // ================================
+    // DATABASE FUNCTIONALITY
+    // ================================
+
+    /**
+     * Toggle database section visibility
+     */
+    toggleDatabaseSection() {
+        const isVisible = this.databaseSection.style.display !== 'none';
+        this.databaseSection.style.display = isVisible ? 'none' : 'block';
+        
+        if (!isVisible) {
+            this.loadDatabases();
+            this.showDatabaseManager();
+        }
+    }
+
+    /**
+     * Show database manager subsection
+     */
+    showDatabaseManager() {
+        this.databaseManager.style.display = 'block';
+        this.schemaGenerator.style.display = 'none';
+        this.queryBuilder.style.display = 'none';
+        
+        this.showDbManagerBtn.classList.add('active');
+        this.showSchemaGeneratorBtn.classList.remove('active');
+    }
+
+    /**
+     * Show schema generator subsection
+     */
+    showSchemaGenerator() {
+        this.databaseManager.style.display = 'none';
+        this.schemaGenerator.style.display = 'block';
+        this.queryBuilder.style.display = 'none';
+        
+        this.showDbManagerBtn.classList.remove('active');
+        this.showSchemaGeneratorBtn.classList.add('active');
+    }
+
+    /**
+     * Load available databases
+     */
+    async loadDatabases() {
+        try {
+            const result = await window.electronAPI.dbListDatabases();
+            
+            if (result.success) {
+                this.databaseSelect.innerHTML = '<option value="">Select database...</option>';
+                
+                result.databases.forEach(dbName => {
+                    const option = document.createElement('option');
+                    option.value = dbName;
+                    option.textContent = dbName;
+                    this.databaseSelect.appendChild(option);
+                });
+                
+                this.showNotification(`Found ${result.databases.length} databases`, 'info');
+            } else {
+                this.showNotification(`Failed to load databases: ${result.error}`, 'error');
+            }
+        } catch (error) {
+            this.showNotification(`Error loading databases: ${error.message}`, 'error');
+        }
+    }
+
+    /**
+     * Handle database selection change
+     */
+    async handleDatabaseChange() {
+        this.currentDatabase = this.databaseSelect.value;
+        
+        if (this.currentDatabase) {
+            this.createTableBtn.disabled = false;
+            this.exportDatabaseBtn.disabled = false;
+            await this.loadTables();
+        } else {
+            this.createTableBtn.disabled = true;
+            this.exportDatabaseBtn.disabled = true;
+            this.tablesList.innerHTML = '<p class="no-data">Select a database to view tables</p>';
+            this.hideDataPanel();
+        }
+    }
+
+    /**
+     * Create new database
+     */
+    async handleCreateDatabase() {
+        const dbName = this.newDatabaseName.value.trim();
+        
+        if (!dbName) {
+            this.showNotification('Please enter a database name', 'error');
+            return;
+        }
+
+        if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(dbName)) {
+            this.showNotification('Database name must start with letter and contain only letters, numbers, and underscores', 'error');
+            return;
+        }
+
+        try {
+            // Create database by creating a simple table (SQLite creates DB on first table creation)
+            const result = await window.electronAPI.dbCreateTable(dbName, '_init_table', {
+                columns: {
+                    temp_column: { type: 'string', required: false }
+                }
+            });
+            
+            if (result.success) {
+                this.showNotification(`Database "${dbName}" created successfully`, 'success');
+                this.newDatabaseName.value = '';
+                await this.loadDatabases();
+                
+                // Select the new database
+                this.databaseSelect.value = dbName;
+                await this.handleDatabaseChange();
+            } else {
+                this.showNotification(`Failed to create database: ${result.error}`, 'error');
+            }
+        } catch (error) {
+            this.showNotification(`Error creating database: ${error.message}`, 'error');
+        }
+    }
+
+    /**
+     * Load tables for current database
+     */
+    async loadTables() {
+        try {
+            const result = await window.electronAPI.dbListTables(this.currentDatabase);
+            
+            if (result.success) {
+                this.tablesList.innerHTML = '';
+                
+                if (result.tables.length === 0) {
+                    this.tablesList.innerHTML = '<p class="no-data">No tables in this database</p>';
+                } else {
+                    result.tables.forEach(tableName => {
+                        if (tableName !== '_init_table') { // Hide init table
+                            const tableItem = document.createElement('div');
+                            tableItem.className = 'table-item';
+                            tableItem.innerHTML = `
+                                <span class="table-name">${tableName}</span>
+                                <div class="table-actions">
+                                    <button onclick="app.selectTable('${tableName}')" class="btn btn-sm">View Data</button>
+                                    <button onclick="app.showTableSchema('${tableName}')" class="btn btn-sm btn-outline">Schema</button>
+                                </div>
+                            `;
+                            this.tablesList.appendChild(tableItem);
+                        }
+                    });
+                }
+            } else {
+                this.showNotification(`Failed to load tables: ${result.error}`, 'error');
+            }
+        } catch (error) {
+            this.showNotification(`Error loading tables: ${error.message}`, 'error');
+        }
+    }
+
+    /**
+     * Select and display table data
+     */
+    async selectTable(tableName) {
+        this.currentTable = tableName;
+        this.currentTableName.textContent = `${tableName} Data`;
+        
+        this.showDataPanel();
+        await this.loadTableData();
+    }
+
+    /**
+     * Show data panel
+     */
+    showDataPanel() {
+        this.dataPanel.style.display = 'block';
+        this.addRecordBtn.disabled = false;
+        this.refreshDataBtn.disabled = false;
+        this.queryBuilderBtn.disabled = false;
+    }
+
+    /**
+     * Hide data panel
+     */
+    hideDataPanel() {
+        this.dataPanel.style.display = 'none';
+        this.addRecordBtn.disabled = true;
+        this.refreshDataBtn.disabled = true;
+        this.queryBuilderBtn.disabled = true;
+    }
+
+    /**
+     * Load table data
+     */
+    async loadTableData(page = 1, pageSize = 10) {
+        try {
+            const offset = (page - 1) * pageSize;
+            const result = await window.electronAPI.dbQueryData(this.currentDatabase, this.currentTable, {
+                limit: pageSize,
+                offset: offset
+            });
+            
+            if (result.success) {
+                this.renderDataTable(result.data);
+                this.renderPagination(result.count, page, pageSize);
+            } else {
+                this.showNotification(`Failed to load data: ${result.error}`, 'error');
+            }
+        } catch (error) {
+            this.showNotification(`Error loading data: ${error.message}`, 'error');
+        }
+    }
+
+    /**
+     * Render data table
+     */
+    renderDataTable(data) {
+        if (!data || data.length === 0) {
+            this.dataTable.innerHTML = '<p class="no-data">No data in this table</p>';
+            return;
+        }
+
+        const columns = Object.keys(data[0]);
+        
+        let tableHTML = '<table class="data-table">';
+        
+        // Header
+        tableHTML += '<thead><tr>';
+        columns.forEach(col => {
+            tableHTML += `<th>${col}</th>`;
+        });
+        tableHTML += '<th>Actions</th></tr></thead>';
+        
+        // Body
+        tableHTML += '<tbody>';
+        data.forEach(row => {
+            tableHTML += '<tr>';
+            columns.forEach(col => {
+                let value = row[col];
+                if (typeof value === 'object' && value !== null) {
+                    value = JSON.stringify(value);
+                } else if (value === null) {
+                    value = '<em>null</em>';
+                }
+                tableHTML += `<td>${value}</td>`;
+            });
+            tableHTML += `
+                <td class="actions">
+                    <button onclick="app.editRecord(${row.id})" class="btn btn-sm">Edit</button>
+                    <button onclick="app.deleteRecord(${row.id})" class="btn btn-sm btn-danger">Delete</button>
+                </td>
+            `;
+            tableHTML += '</tr>';
+        });
+        tableHTML += '</tbody></table>';
+        
+        this.dataTable.innerHTML = tableHTML;
+    }
+
+    /**
+     * Render pagination
+     */
+    renderPagination(totalCount, currentPage, pageSize) {
+        const totalPages = Math.ceil(totalCount / pageSize);
+        
+        if (totalPages <= 1) {
+            this.dataPagination.innerHTML = '';
+            return;
+        }
+        
+        let paginationHTML = '<div class="pagination-info">';
+        paginationHTML += `Showing page ${currentPage} of ${totalPages} (${totalCount} total records)`;
+        paginationHTML += '</div><div class="pagination-controls">';
+        
+        if (currentPage > 1) {
+            paginationHTML += `<button onclick="app.loadTableData(${currentPage - 1})" class="btn btn-sm">Previous</button>`;
+        }
+        
+        if (currentPage < totalPages) {
+            paginationHTML += `<button onclick="app.loadTableData(${currentPage + 1})" class="btn btn-sm">Next</button>`;
+        }
+        
+        paginationHTML += '</div>';
+        this.dataPagination.innerHTML = paginationHTML;
+    }
+
+    // Schema Generation Methods
+    async handleGenerateSchema() {
+        const description = this.schemaDescription.value.trim();
+        
+        if (!description) {
+            this.showNotification('Please enter a description of your database needs', 'error');
+            return;
+        }
+
+        this.setSchemaButtonLoading(true);
+
+        try {
+            const result = await window.electronAPI.dbGenerateSchema(description);
+            
+            if (result.success) {
+                this.generatedSchema = result.schema;
+                this.displaySchemaOutput(result.schema, result.raw_response);
+                this.showNotification('Schema generated successfully!', 'success');
+            } else {
+                this.showNotification(`Schema generation failed: ${result.error}`, 'error');
+            }
+        } catch (error) {
+            this.showNotification(`Error generating schema: ${error.message}`, 'error');
+        } finally {
+            this.setSchemaButtonLoading(false);
+        }
+    }
+
+    displaySchemaOutput(schema) {
+        this.schemaOutput.style.display = 'block';
+        document.getElementById('schemaJson').textContent = JSON.stringify(schema, null, 2);
+        this.switchSchemaTab('json');
+    }
+
+    switchSchemaTab(tabName) {
+        document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+        document.querySelector(`[data-tab="${tabName}"]`).classList.add('active');
+        
+        document.querySelectorAll('.tab-pane').forEach(pane => pane.classList.remove('active'));
+        document.getElementById(tabName === 'visual' ? 'visualSchema' : 
+                              tabName === 'json' ? 'jsonSchema' : 'sqlScript').classList.add('active');
+    }
+
+    setSchemaButtonLoading(loading) {
+        const btn = this.generateSchemaBtn;
+        const text = btn.querySelector('.btn-text');
+        const spinner = btn.querySelector('.spinner');
+        
+        if (loading) {
+            btn.disabled = true;
+            text.textContent = 'Generating...';
+            spinner.style.display = 'block';
+        } else {
+            btn.disabled = false;
+            text.textContent = 'Generate Schema';
+            spinner.style.display = 'none';
+        }
+    }
+
     /**
      * Initialize theme system
      */
@@ -821,11 +1298,11 @@ const notificationStyles = `
             window.electronAPI.updateConfig({
                 ui: { darkMode: theme === 'dark' }
             }).catch(error => {
-                console.warn('Failed to save theme preference:', error);
+                rendererLogger.warn('Failed to save theme preference:', error);
             });
         }
         
-        console.log(`Theme switched to: ${theme}`);
+        rendererLogger.debug(`Theme switched to: ${theme}`);
     }
 }
 

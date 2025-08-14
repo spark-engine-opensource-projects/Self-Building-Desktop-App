@@ -21,7 +21,14 @@ const envConfig = require('./utils/envConfig');
 const performanceMonitor = require('./utils/performanceMonitor');
 const requestInterceptor = require('./utils/requestInterceptor');
 const scheduler = require('./utils/scheduler');
+const DatabaseManager = require('./utils/databaseManager');
+const AISchemaGenerator = require('./utils/aiSchemaGenerator');
 const { autoUpdater } = require('electron-updater');
+const RateLimiter = require('./utils/rateLimiter');
+const crypto = require('crypto');
+const PerformanceDashboard = require('./modules/PerformanceDashboard');
+const CodeGenerationModule = require('./modules/CodeGenerationModule');
+const CodeExecutionModule = require('./modules/CodeExecutionModule');
 
 const execAsync = promisify(exec);
 
@@ -35,6 +42,16 @@ class DynamicAppBuilder {
             'express', 'cors', 'body-parser', 'helmet'
         ];
         this.activeSessions = new Map();
+        this.databaseManager = new DatabaseManager();
+        this.aiSchemaGenerator = null;
+        this.performanceDashboard = new PerformanceDashboard();
+        this.codeGenerationModule = null;
+        this.codeExecutionModule = null;
+        this.apiKeyRateLimiter = new RateLimiter({
+            maxRequests: 5,
+            windowMs: 60000, // 1 minute
+            algorithm: 'sliding_window'
+        });
         this.config = {
             maxConcurrentExecutions: 3,
             executionTimeout: 30000,
@@ -98,8 +115,26 @@ class DynamicAppBuilder {
 
     setupIPC() {
         ipcMain.handle('set-api-key', async (event, apiKey) => {
+            // Rate limiting for API key validation
+            const clientId = event.sender.id.toString();
+            const allowed = await this.apiKeyRateLimiter.checkLimit(clientId);
+            
+            if (!allowed) {
+                logger.logSecurityEvent('api_key_rate_limit_exceeded', { 
+                    clientId,
+                    timestamp: new Date().toISOString()
+                });
+                return { 
+                    success: false, 
+                    error: 'Too many API key validation attempts. Please wait before trying again.' 
+                };
+            }
+            
             try {
                 this.anthropic = new Anthropic({ apiKey });
+                this.aiSchemaGenerator = new AISchemaGenerator(this.anthropic);
+                this.codeGenerationModule = new CodeGenerationModule(this.anthropic);
+                this.codeExecutionModule = new CodeExecutionModule(this.config);
                 return { success: true };
             } catch (error) {
                 return { success: false, error: error.message };
@@ -312,6 +347,220 @@ class DynamicAppBuilder {
                 return { success: true, config: cacheManager.config };
             } catch (error) {
                 logger.error('Failed to update cache config', error);
+                return { success: false, error: error.message };
+            }
+        });
+
+        // Database Management IPC Handlers
+        ipcMain.handle('db-list-databases', async () => {
+            try {
+                return await this.databaseManager.listDatabases();
+            } catch (error) {
+                logger.error('Failed to list databases', error);
+                return { success: false, error: error.message };
+            }
+        });
+
+        ipcMain.handle('db-list-tables', async (event, dbName) => {
+            try {
+                return await this.databaseManager.listTables(dbName);
+            } catch (error) {
+                logger.error('Failed to list tables', error);
+                return { success: false, error: error.message };
+            }
+        });
+
+        ipcMain.handle('db-create-table', async (event, { dbName, tableName, schema }) => {
+            try {
+                return await this.databaseManager.createTable(dbName, tableName, schema);
+            } catch (error) {
+                logger.error('Failed to create table', error);
+                return { success: false, error: error.message };
+            }
+        });
+
+        ipcMain.handle('db-insert-data', async (event, { dbName, tableName, data }) => {
+            try {
+                return await this.databaseManager.insertData(dbName, tableName, data);
+            } catch (error) {
+                logger.error('Failed to insert data', error);
+                return { success: false, error: error.message };
+            }
+        });
+
+        ipcMain.handle('db-query-data', async (event, { dbName, tableName, options }) => {
+            try {
+                return await this.databaseManager.queryData(dbName, tableName, options);
+            } catch (error) {
+                logger.error('Failed to query data', error);
+                return { success: false, error: error.message };
+            }
+        });
+
+        ipcMain.handle('db-update-data', async (event, { dbName, tableName, id, data }) => {
+            try {
+                return await this.databaseManager.updateData(dbName, tableName, id, data);
+            } catch (error) {
+                logger.error('Failed to update data', error);
+                return { success: false, error: error.message };
+            }
+        });
+
+        ipcMain.handle('db-delete-data', async (event, { dbName, tableName, id }) => {
+            try {
+                return await this.databaseManager.deleteData(dbName, tableName, id);
+            } catch (error) {
+                logger.error('Failed to delete data', error);
+                return { success: false, error: error.message };
+            }
+        });
+
+        ipcMain.handle('db-execute-sql', async (event, { dbName, sql, params }) => {
+            try {
+                return await this.databaseManager.executeSQL(dbName, sql, params);
+            } catch (error) {
+                logger.error('Failed to execute SQL', error);
+                return { success: false, error: error.message };
+            }
+        });
+
+        ipcMain.handle('db-export-database', async (event, dbName) => {
+            try {
+                return await this.databaseManager.exportDatabase(dbName);
+            } catch (error) {
+                logger.error('Failed to export database', error);
+                return { success: false, error: error.message };
+            }
+        });
+
+        // AI Schema Generation IPC Handlers
+        ipcMain.handle('db-generate-schema', async (event, description) => {
+            try {
+                if (!this.aiSchemaGenerator) {
+                    return { success: false, error: 'AI schema generator not available. Please set API key first.' };
+                }
+                return await this.aiSchemaGenerator.generateSchema(description);
+            } catch (error) {
+                logger.error('Failed to generate schema', error);
+                return { success: false, error: error.message };
+            }
+        });
+
+        ipcMain.handle('db-generate-database-script', async (event, description) => {
+            try {
+                if (!this.aiSchemaGenerator) {
+                    return { success: false, error: 'AI schema generator not available. Please set API key first.' };
+                }
+                return await this.aiSchemaGenerator.generateDatabaseScript(description);
+            } catch (error) {
+                logger.error('Failed to generate database script', error);
+                return { success: false, error: error.message };
+            }
+        });
+
+        ipcMain.handle('db-suggest-improvements', async (event, { schema, context }) => {
+            try {
+                if (!this.aiSchemaGenerator) {
+                    return { success: false, error: 'AI schema generator not available. Please set API key first.' };
+                }
+                return await this.aiSchemaGenerator.suggestImprovements(schema, context);
+            } catch (error) {
+                logger.error('Failed to suggest improvements', error);
+                return { success: false, error: error.message };
+            }
+        });
+
+        // Database-driven Code Generation
+        ipcMain.handle('db-generate-code-with-data', async (event, { prompt, dbName, includeData }) => {
+            try {
+                if (!this.anthropic) {
+                    return { success: false, error: 'Anthropic API key not configured' };
+                }
+
+                let enhancedPrompt = prompt;
+                
+                if (includeData && dbName) {
+                    // Get database structure and sample data
+                    const tablesResult = await this.databaseManager.listTables(dbName);
+                    const dbContext = await this.buildDatabaseContext(dbName, tablesResult.tables);
+                    
+                    enhancedPrompt = `${prompt}
+
+AVAILABLE DATABASE: ${dbName}
+${dbContext}
+
+Please generate code that can interact with this database structure. Use the provided table schemas and sample data as context.`;
+                }
+
+                return await this.generateCode(enhancedPrompt);
+            } catch (error) {
+                logger.error('Failed to generate code with database context', error);
+                return { success: false, error: error.message };
+            }
+        });
+        
+        // Secure session ID generation
+        ipcMain.handle('generate-session-id', async () => {
+            const timestamp = Date.now();
+            const randomBytes = crypto.randomBytes(16).toString('hex');
+            return `session_${timestamp}_${randomBytes}`;
+        });
+        
+        // Performance Dashboard IPC Handlers
+        ipcMain.handle('get-performance-dashboard', async () => {
+            try {
+                const data = this.performanceDashboard.getDashboardData();
+                return { success: true, ...data };
+            } catch (error) {
+                logger.error('Failed to get performance dashboard data', error);
+                return { success: false, error: error.message };
+            }
+        });
+        
+        ipcMain.handle('acknowledge-alert', async (event, alertId) => {
+            try {
+                this.performanceDashboard.acknowledgeAlert(alertId);
+                return { success: true };
+            } catch (error) {
+                logger.error('Failed to acknowledge alert', error);
+                return { success: false, error: error.message };
+            }
+        });
+        
+        ipcMain.handle('export-performance-data', async (event, format = 'json') => {
+            try {
+                const data = this.performanceDashboard.exportData(format);
+                return { success: true, data };
+            } catch (error) {
+                logger.error('Failed to export performance data', error);
+                return { success: false, error: error.message };
+            }
+        });
+        
+        ipcMain.handle('open-performance-dashboard', async () => {
+            try {
+                const dashboardWindow = new BrowserWindow({
+                    width: 1400,
+                    height: 900,
+                    webPreferences: {
+                        nodeIntegration: false,
+                        contextIsolation: true,
+                        preload: path.join(__dirname, 'preload.js'),
+                        sandbox: true,
+                        webSecurity: true
+                    },
+                    title: 'Performance Dashboard'
+                });
+                
+                dashboardWindow.loadFile(path.join(__dirname, 'renderer', 'performanceDashboard.html'));
+                
+                if (process.argv.includes('--dev')) {
+                    dashboardWindow.webContents.openDevTools();
+                }
+                
+                return { success: true };
+            } catch (error) {
+                logger.error('Failed to open performance dashboard', error);
                 return { success: false, error: error.message };
             }
         });
@@ -860,6 +1109,43 @@ NO COMMENTS in code - make it self-explanatory through good naming and structure
                 this.mainWindow.webContents.send('update-downloaded', info);
             }
         });
+    }
+
+    /**
+     * Build database context for AI code generation
+     */
+    async buildDatabaseContext(dbName, tables) {
+        try {
+            let context = `\nDATABASE STRUCTURE:\n`;
+            
+            for (const tableName of tables) {
+                // Get table schema
+                const db = await this.databaseManager.connectDatabase(dbName);
+                const schema = await this.databaseManager.getTableSchema(db, tableName);
+                
+                context += `\nTable: ${tableName}\n`;
+                context += `Columns:\n`;
+                
+                Object.entries(schema.columns).forEach(([colName, colDef]) => {
+                    context += `  - ${colName}: ${colDef.type}${colDef.required ? ' (required)' : ''}${colDef.unique ? ' (unique)' : ''}\n`;
+                });
+                
+                // Get sample data (limited to 3 rows)
+                const sampleData = await this.databaseManager.queryData(dbName, tableName, { limit: 3 });
+                if (sampleData.success && sampleData.data.length > 0) {
+                    context += `Sample data:\n`;
+                    sampleData.data.forEach((row, index) => {
+                        context += `  Row ${index + 1}: ${JSON.stringify(row, null, 2)}\n`;
+                    });
+                }
+                context += `\n`;
+            }
+            
+            return context;
+        } catch (error) {
+            logger.error('Failed to build database context', { dbName, error });
+            return '\nDatabase context unavailable due to error.\n';
+        }
     }
 }
 

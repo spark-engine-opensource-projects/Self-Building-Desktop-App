@@ -18,6 +18,10 @@ An AI-powered Electron desktop application that generates and executes interacti
 - 📈 **Performance Monitoring** - Real-time metrics collection and analysis
 - 🔄 **Request Interceptors** - Advanced request/response handling
 - 📅 **Auto Scheduler** - Background cleanup and maintenance tasks
+- 🗄️ **Dynamic Database** - AI-powered SQLite database creation and management
+- 📊 **Data Visualization** - Built-in charts, graphs, and data analysis tools
+- 🔍 **Visual Query Builder** - No-SQL-knowledge-required database queries
+- 📈 **Database Analytics** - Automatic statistics and insights generation
 
 ## Prerequisites
 
@@ -98,6 +102,20 @@ The application can be configured via `src/config/default.json`:
    - Review the generated code
    - Click Execute to run in sandboxed environment
    - See results in real-time
+
+5. **Database Management**
+   - Click the "🗄️ Database" button to access database features
+   - Use AI Schema Generator to create databases from natural language:
+     - "Create a blog system with users, posts, and comments"
+     - "Build an inventory system for a retail store"
+   - Manage data through the visual interface
+   - Create charts and visualizations from your data
+
+6. **Advanced Features**
+   - Use the Visual Query Builder for complex database queries
+   - Export databases as JSON for backup or sharing
+   - Generate code that works with your database structure
+   - View automatic statistics and insights
 
 ## Architecture
 

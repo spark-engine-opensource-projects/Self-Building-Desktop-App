@@ -1,10 +1,13 @@
 // Jest setup file
 const path = require('path');
 
+// Define mock paths outside of the mock to avoid scope issues
+const mockTestDataPath = path.join(__dirname, '..', 'test-data');
+
 // Mock electron modules
 jest.mock('electron', () => ({
   app: {
-    getPath: jest.fn(() => path.join(__dirname, '..', 'test-data')),
+    getPath: jest.fn(() => mockTestDataPath),
     whenReady: jest.fn(() => Promise.resolve())
   },
   BrowserWindow: jest.fn().mockImplementation(() => ({
@@ -22,6 +25,11 @@ jest.mock('electron', () => ({
     showOpenDialog: jest.fn(),
     showErrorBox: jest.fn()
   }
+}));
+
+// Mock uuid module  
+jest.mock('uuid', () => ({
+  v4: jest.fn(() => 'mock-uuid-1234-5678-9012')
 }));
 
 // Global test utilities

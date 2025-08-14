@@ -4,11 +4,17 @@ const logger = require('./logger');
 class CacheManager {
     constructor() {
         this.cache = new Map();
+        this.accessOrder = new Map(); // Track access order for LRU
         this.maxCacheSize = 100; // Maximum number of cached items
+        this.maxMemoryMB = 50; // Maximum memory usage in MB
+        this.currentMemoryUsage = 0; // Track current memory usage in bytes
+        
         this.cacheStats = {
             hits: 0,
             misses: 0,
             evictions: 0,
+            lruEvictions: 0,
+            memoryEvictions: 0,
             totalRequests: 0
         };
         
@@ -17,8 +23,128 @@ class CacheManager {
             enabled: true,
             ttl: 3600000, // 1 hour in milliseconds
             maxSimilarity: 0.85, // Minimum similarity for cache hit
-            maxPromptLength: 1000 // Only cache prompts shorter than this
+            maxPromptLength: 1000, // Only cache prompts shorter than this
+            evictionPolicy: 'lru' // 'lru', 'lfu', 'fifo'
         };
+        
+        // Start periodic cleanup
+        this.startCleanupTimer();
+    }
+    
+    /**
+     * Start periodic cleanup timer
+     */
+    startCleanupTimer() {
+        setInterval(() => {
+            this.cleanupExpiredEntries();
+            this.enforceMemoryLimit();
+        }, 60000); // Run every minute
+    }
+    
+    /**
+     * Get size of cached item in bytes (approximate)
+     */
+    getItemSize(item) {
+        return JSON.stringify(item).length * 2; // Approximate bytes (UTF-16)
+    }
+    
+    /**
+     * Update access time for LRU tracking
+     */
+    updateAccessTime(key) {
+        this.accessOrder.set(key, Date.now());
+    }
+    
+    /**
+     * Find least recently used item
+     */
+    findLRUItem() {
+        let oldestKey = null;
+        let oldestTime = Date.now();
+        
+        for (const [key, time] of this.accessOrder.entries()) {
+            if (time < oldestTime) {
+                oldestTime = time;
+                oldestKey = key;
+            }
+        }
+        
+        return oldestKey;
+    }
+    
+    /**
+     * Evict items based on LRU policy
+     */
+    evictLRU() {
+        const keysToEvict = Math.ceil(this.cache.size * 0.1); // Evict 10% of cache
+        let evicted = 0;
+        
+        while (evicted < keysToEvict && this.cache.size > 0) {
+            const lruKey = this.findLRUItem();
+            if (lruKey) {
+                const item = this.cache.get(lruKey);
+                if (item) {
+                    this.currentMemoryUsage -= this.getItemSize(item);
+                }
+                this.cache.delete(lruKey);
+                this.accessOrder.delete(lruKey);
+                this.cacheStats.lruEvictions++;
+                evicted++;
+                
+                logger.debug('LRU eviction', { key: lruKey, evicted, cacheSize: this.cache.size });
+            } else {
+                break;
+            }
+        }
+    }
+    
+    /**
+     * Enforce memory limit
+     */
+    enforceMemoryLimit() {
+        const maxMemoryBytes = this.maxMemoryMB * 1024 * 1024;
+        
+        while (this.currentMemoryUsage > maxMemoryBytes && this.cache.size > 0) {
+            const lruKey = this.findLRUItem();
+            if (lruKey) {
+                const item = this.cache.get(lruKey);
+                if (item) {
+                    this.currentMemoryUsage -= this.getItemSize(item);
+                }
+                this.cache.delete(lruKey);
+                this.accessOrder.delete(lruKey);
+                this.cacheStats.memoryEvictions++;
+                
+                logger.debug('Memory limit eviction', { 
+                    key: lruKey, 
+                    memoryUsageMB: this.currentMemoryUsage / (1024 * 1024),
+                    limitMB: this.maxMemoryMB 
+                });
+            } else {
+                break;
+            }
+        }
+    }
+    
+    /**
+     * Clean up expired entries
+     */
+    cleanupExpiredEntries() {
+        let cleaned = 0;
+        
+        for (const [key, item] of this.cache.entries()) {
+            if (this.isExpired(item)) {
+                this.currentMemoryUsage -= this.getItemSize(item);
+                this.cache.delete(key);
+                this.accessOrder.delete(key);
+                this.cacheStats.evictions++;
+                cleaned++;
+            }
+        }
+        
+        if (cleaned > 0) {
+            logger.debug('Cleaned expired cache entries', { cleaned, remaining: this.cache.size });
+        }
     }
 
     /**
@@ -103,6 +229,9 @@ class CacheManager {
             exactMatch.lastAccessed = Date.now();
             exactMatch.hitCount++;
             
+            // Update LRU access time
+            this.updateAccessTime(exactKey);
+            
             logger.debug('Cache hit (exact match)', {
                 key: exactKey,
                 hitCount: exactMatch.hitCount,
@@ -155,18 +284,29 @@ class CacheManager {
             lastAccessed: Date.now(),
             hitCount: 0
         };
+        
+        const itemSize = this.getItemSize(cacheItem);
 
-        // Evict old items if cache is full
+        // Check if we need to evict items based on size or memory
         if (this.cache.size >= this.maxCacheSize) {
-            this.evictLeastUsed();
+            this.evictLRU();
+        }
+        
+        // Check memory limit
+        const maxMemoryBytes = this.maxMemoryMB * 1024 * 1024;
+        if (this.currentMemoryUsage + itemSize > maxMemoryBytes) {
+            this.enforceMemoryLimit();
         }
 
         this.cache.set(key, cacheItem);
+        this.updateAccessTime(key);
+        this.currentMemoryUsage += itemSize;
         
         logger.debug('Item cached', {
             key,
             promptLength: prompt.length,
-            cacheSize: this.cache.size
+            cacheSize: this.cache.size,
+            memoryUsageMB: this.currentMemoryUsage / (1024 * 1024)
         });
     }
 

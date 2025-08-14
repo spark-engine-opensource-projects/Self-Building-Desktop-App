@@ -7,7 +7,10 @@ try {
   });
 } catch (error) {
   // dotenv not available or .env file doesn't exist
-  console.warn('Environment file not loaded:', error.message);
+  // Only log in development to avoid production noise
+  if (process.env.NODE_ENV === 'development') {
+    console.warn('Environment file not loaded:', error.message);
+  }
 }
 
 /**
