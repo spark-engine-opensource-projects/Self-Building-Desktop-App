@@ -82,6 +82,9 @@ class PerformanceMonitor {
      * Setup performance observers
      */
     setupObservers() {
+        // Clear any existing observers first
+        this.cleanupObservers();
+        
         try {
             // HTTP request observer
             const httpObserver = new PerformanceObserver((list) => {
@@ -106,6 +109,20 @@ class PerformanceMonitor {
         } catch (error) {
             logger.warn('Failed to setup performance observers', error);
         }
+    }
+    
+    /**
+     * Cleanup observers
+     */
+    cleanupObservers() {
+        this.observers.forEach(observer => {
+            try {
+                observer.disconnect();
+            } catch (error) {
+                // Silently ignore cleanup errors
+            }
+        });
+        this.observers = [];
     }
 
     /**
@@ -241,6 +258,13 @@ class PerformanceMonitor {
         // Limit history
         if (metrics.length > this.config.maxMetricHistory) {
             metrics.shift();
+        }
+        
+        // Limit total number of keys in collection
+        if (this.metrics[collection].size > 100) {
+            // Remove oldest entries
+            const keysToRemove = Array.from(this.metrics[collection].keys()).slice(0, 10);
+            keysToRemove.forEach(k => this.metrics[collection].delete(k));
         }
     }
 

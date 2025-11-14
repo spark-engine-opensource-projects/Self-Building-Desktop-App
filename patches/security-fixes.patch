@@ -1,0 +1,31 @@
+# Security Fixes Patch for main.js
+# Apply this patch after backing up the original file
+
+# Add new imports after line 32
++ const ipcSecurity = require('./utils/ipcSecurityMiddleware');
++ const credentialManager = require('./utils/secureCredentialManager');
++ const AuditModule = require('./modules/AuditModule');
++ const CONSTANTS = require('./config/constants');
+
+# Replace constructor (lines 36-62) with:
+# Remove unused imports: codeEnhancer, jsonParser, requestInterceptor, scheduler
+
+# Replace the entire constructor with the updated version shown in SECURITY_IMPROVEMENTS.md
+
+# Update initialize() method to include:
+# - Audit module initialization (first)
+# - Credential manager initialization
+# - IPC security initialization
+# - Application startup logging
+
+# Update createWindow() to register sender
+# Add sender registration and cleanup
+
+# Wrap all IPC handlers with ipcSecurity.secureHandler()
+# See SECURITY_IMPROVEMENTS.md for examples
+
+# Add shutdown() method
+
+# Add before-quit handler
+
+## IMPORTANT: Follow the step-by-step guide in docs/SECURITY_IMPROVEMENTS.md

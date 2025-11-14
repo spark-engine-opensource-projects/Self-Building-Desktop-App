@@ -4,9 +4,10 @@
  */
 class RendererLogger {
     constructor() {
-        this.isDevelopment = process.env.NODE_ENV === 'development' || 
-                           window.location.hostname === 'localhost' ||
-                           window.location.protocol === 'file:';
+        // Check if we're in development mode using browser-safe checks
+        this.isDevelopment = window.location.hostname === 'localhost' ||
+                           window.location.protocol === 'file:' ||
+                           window.location.search.includes('dev');
     }
 
     /**
@@ -73,4 +74,5 @@ window.devLog = {
     perf: rendererLogger.logPerformance.bind(rendererLogger)
 };
 
-module.exports = rendererLogger;
+// Also make rendererLogger available globally
+window.rendererLogger = rendererLogger;

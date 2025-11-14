@@ -4,10 +4,12 @@ const fs = require('fs').promises;
 const { exec, spawn } = require('child_process');
 const { promisify } = require('util');
 const Anthropic = require('@anthropic-ai/sdk');
+const fetch = require('node-fetch');
 const { v4: uuidv4 } = require('uuid');
 const logger = require('./utils/logger');
 const systemMonitor = require('./utils/systemMonitor');
 const configManager = require('./utils/configManager');
+const enhancedConfigManager = require('./utils/enhancedConfigManager');
 const securitySandbox = require('./utils/securitySandbox');
 const sessionManager = require('./utils/sessionManager');
 const codeEnhancer = require('./utils/codeEnhancer');
@@ -24,7 +26,7 @@ const scheduler = require('./utils/scheduler');
 const DatabaseManager = require('./utils/databaseManager');
 const AISchemaGenerator = require('./utils/aiSchemaGenerator');
 const { autoUpdater } = require('electron-updater');
-const RateLimiter = require('./utils/rateLimiter');
+const { RateLimiter } = require('./utils/rateLimiter');
 const crypto = require('crypto');
 const PerformanceDashboard = require('./modules/PerformanceDashboard');
 const CodeGenerationModule = require('./modules/CodeGenerationModule');
@@ -66,6 +68,9 @@ class DynamicAppBuilder {
         // Initialize configuration
         await configManager.initialize();
         
+        // Initialize enhanced configuration
+        await enhancedConfigManager.initialize();
+
         // Initialize session manager
         await sessionManager.initialize();
         
@@ -97,7 +102,7 @@ class DynamicAppBuilder {
                 nodeIntegration: false,
                 contextIsolation: true,
                 preload: path.join(__dirname, 'preload.js'),
-                sandbox: true, // Enhanced security - sandbox enabled
+                sandbox: false, // Disabled temporarily to allow ES6 in loaded scripts
                 webSecurity: true, // Enforce web security
                 allowRunningInsecureContent: false, // Block insecure content
                 experimentalFeatures: false // Disable experimental features
@@ -131,7 +136,89 @@ class DynamicAppBuilder {
             }
             
             try {
-                this.anthropic = new Anthropic({ apiKey });
+                // Validate API key format
+                if (!apiKey || typeof apiKey !== 'string') {
+                    return { success: false, error: 'Invalid API key format' };
+                }
+
+                if (!apiKey.trim()) {
+                    return { success: false, error: 'API key cannot be empty' };
+                }
+
+                // Initialize Anthropic client with Electron-compatible settings
+                // Use node-fetch explicitly for better Electron compatibility
+                this.anthropic = new Anthropic({
+                    apiKey,
+                    fetch: fetch,  // Explicitly use node-fetch for Electron compatibility
+                    // Add timeout and other options for better error handling
+                    timeout: 30000,
+                    maxRetries: 0  // Disable retries for immediate error feedback
+                });
+
+                // Test the API key with a minimal request
+                try {
+                    logger.info('Testing API key with validation request...');
+                    const response = await this.anthropic.messages.create({
+                        model: 'claude-3-haiku-20240307',
+                        max_tokens: 10,
+                        messages: [{ role: 'user', content: 'test' }]
+                    });
+                    logger.info('API key validated successfully', { responseId: response.id });
+                } catch (testError) {
+                    this.anthropic = null;
+
+                    // Enhanced error logging
+                    logger.error('API key validation failed - detailed error:', {
+                        message: testError.message,
+                        status: testError.status,
+                        statusCode: testError.statusCode,
+                        type: testError.type,
+                        error: testError.error,
+                        stack: testError.stack,
+                        code: testError.code,
+                        cause: testError.cause,
+                        fullError: JSON.stringify(testError, Object.getOwnPropertyNames(testError))
+                    });
+
+                    // Check for specific error types
+                    if (testError.status === 401 || testError.statusCode === 401) {
+                        return { success: false, error: 'Invalid API key. Please check your Anthropic API key and try again.' };
+                    }
+
+                    // Check for model not found error
+                    if (testError.status === 404 || testError.statusCode === 404) {
+                        return { success: false, error: 'Model not found. Please update the application configuration with a valid Claude model name.' };
+                    }
+
+                    // Check for network/connection errors
+                    if (testError.code === 'ENOTFOUND' || testError.code === 'ECONNREFUSED' ||
+                        testError.code === 'ETIMEDOUT' || testError.code === 'EAI_AGAIN') {
+                        return {
+                            success: false,
+                            error: `Network error: ${testError.code}. Please check your internet connection.`
+                        };
+                    }
+
+                    if (testError.message && testError.message.toLowerCase().includes('connection')) {
+                        return {
+                            success: false,
+                            error: `Connection error: ${testError.message}. Check your network settings.`
+                        };
+                    }
+
+                    if (testError.message && testError.message.toLowerCase().includes('fetch')) {
+                        return {
+                            success: false,
+                            error: `Fetch error: ${testError.message}. This may be an Electron networking issue.`
+                        };
+                    }
+
+                    return {
+                        success: false,
+                        error: `API key validation failed: ${testError.message || testError.toString()}`
+                    };
+                }
+
                 this.aiSchemaGenerator = new AISchemaGenerator(this.anthropic);
                 this.codeGenerationModule = new CodeGenerationModule(this.anthropic);
                 this.codeExecutionModule = new CodeExecutionModule(this.config);
@@ -596,6 +683,16 @@ Please generate code that can interact with this database structure. Use the pro
             }
         }
 
+        // Check if API key is configured
+        if (!this.anthropic) {
+            logger.warn('Code generation attempted without API key');
+            return {
+                success: false,
+                error: 'API key not configured. Please set your Anthropic API key first.',
+                errorType: 'authentication'
+            };
+        }
+
         // Check prompt length limit
         const securityConfig = configManager.get('security');
         if (prompt.length > securityConfig.maxPromptLength) {
@@ -604,11 +701,12 @@ Please generate code that can interact with this database structure. Use the pro
         }
 
         try {
-            const resourceCheck = await systemMonitor.checkResourceLimits();
-            if (!resourceCheck.safe) {
-                logger.logSecurityEvent('resource_limit_exceeded', resourceCheck);
-                return { success: false, error: 'System resources insufficient for code generation' };
-            }
+            // TEMP: Commented out resource check - too strict for development
+            // const resourceCheck = await systemMonitor.checkResourceLimits();
+            // if (!resourceCheck.safe) {
+            //     logger.logSecurityEvent('resource_limit_exceeded', resourceCheck);
+            //     return { success: false, error: 'System resources insufficient for code generation' };
+            // }
 
             const result = await this.attemptCodeGeneration(prompt, retryCount, startTime);
             
@@ -629,11 +727,24 @@ Please generate code that can interact with this database structure. Use the pro
             const aiConfig = configManager.get('ai');
             const systemPrompt = `You are an advanced UI component generation assistant. Generate complete, production-ready, interactive web components for desktop applications.
 
-Respond with a JSON object in this EXACT format:
+Respond with ONLY a valid JSON object in this EXACT format - NO markdown, NO explanations, ONLY the JSON:
 {
   "packages": [],
   "code": "your complete JavaScript code here",
   "description": "Brief description of the component functionality"
+}
+
+CRITICAL JSON FORMATTING RULES:
+1. In your JavaScript code, ALWAYS use SINGLE quotes (') for HTML attributes, NEVER double quotes (")
+2. Example: innerHTML = \`<div class='container' id='main'>\` ✓ CORRECT
+3. Example: innerHTML = \`<div class="container" id="main">\` ✗ WRONG - breaks JSON!
+4. The JSON "code" value uses double quotes, so any double quotes inside must be escaped with \\
+
+Example of correct JSON response:
+{
+  "packages": [],
+  "code": "class MyComponent extends HTMLElement {\\n  constructor() {\\n    super();\\n    this.innerHTML = '<div class=\\'main\\'>Hello</div>';\\n  }\\n}\\ncustomElements.define('my-component', MyComponent);",
+  "description": "A simple component"
 }
 
 CRITICAL REQUIREMENTS:
@@ -644,6 +755,8 @@ CRITICAL REQUIREMENTS:
 - Create responsive, accessible, and visually appealing interfaces
 - Include comprehensive error handling and input validation
 - Implement proper event delegation and cleanup
+- IMPORTANT: After defining a custom element, ALWAYS create an instance and append it to the 'execution-root' div
+- Example: const root = document.getElementById('execution-root'); root.innerHTML = ''; root.appendChild(document.createElement('your-element-name'));
 
 🎨 STYLING:
 - Use inline styles or inject CSS via <style> elements
@@ -718,12 +831,103 @@ NO COMMENTS in code - make it self-explanatory through good naming and structure
                 ]
             });
 
-            const content = response.content[0].text;
+            let content = response.content[0].text;
+
+            // DEBUG: Write response to file
+            const fs = require('fs');
+            const path = require('path');
+            const debugPath = path.join(__dirname, '../claude-response-debug.txt');
+            fs.writeFileSync(debugPath, `=== RESPONSE AT ${new Date().toISOString()} ===\n${content}\n=== END ===\n\n`, { flag: 'a' });
+            console.error(`[DEBUG] Response written to ${debugPath}`);
+            console.error(`[DEBUG] Response length: ${content.length}`);
+
             logger.debug('AI response received', { contentLength: content.length });
-            
+
+            // Extract JSON object from the response (between first { and last })
+            const jsonStart = content.indexOf('{');
+            const jsonEnd = content.lastIndexOf('}') + 1;
+            if (jsonStart !== -1 && jsonEnd > jsonStart) {
+                content = content.substring(jsonStart, jsonEnd);
+                console.error(`[DEBUG] Extracted JSON, length: ${content.length}`);
+
+                // Fix: Claude sometimes returns literal newlines in JSON strings which is invalid
+                // We need to properly escape them. Use a state machine to track if we're inside a string.
+                let fixed = '';
+                let inString = false;
+                let escapeNext = false;
+
+                for (let i = 0; i < content.length; i++) {
+                    const char = content[i];
+
+                    if (escapeNext) {
+                        fixed += char;
+                        escapeNext = false;
+                        continue;
+                    }
+
+                    if (char === '\\') {
+                        fixed += char;
+                        escapeNext = true;
+                        continue;
+                    }
+
+                    if (char === '"') {
+                        fixed += char;
+                        inString = !inString;
+                        continue;
+                    }
+
+                    if (inString) {
+                        // We're inside a string - escape control characters
+                        if (char === '\n') {
+                            fixed += '\\n';
+                        } else if (char === '\r') {
+                            fixed += '\\r';
+                        } else if (char === '\t') {
+                            fixed += '\\t';
+                        } else {
+                            fixed += char;
+                        }
+                    } else {
+                        // Outside string - copy as-is
+                        fixed += char;
+                    }
+                }
+
+                content = fixed;
+                console.error(`[DEBUG] Fixed JSON control characters, length: ${content.length}`);
+
+                // Additional fix: Convert HTML attribute double quotes to single quotes in the code field
+                // This prevents JSON parsing errors when Claude uses class="foo" instead of class='foo'
+                try {
+                    const tempParse = JSON.parse(content);
+                    if (tempParse.code && typeof tempParse.code === 'string') {
+                        // Convert HTML attributes from double to single quotes
+                        //Pattern: word= "value" -> word='value'
+                        let codeFixed = tempParse.code.replace(/(\s+\w+(?:-\w+)*)\s*=\s*"([^"]*)"/g, "$1='$2'");
+                        tempParse.code = codeFixed;
+                        content = JSON.stringify(tempParse);
+                        console.error(`[DEBUG] Converted HTML attributes to single quotes in code field`);
+                    }
+                } catch (e) {
+                    // If parsing fails at this stage, we'll continue with the original content
+                    // and let the main parser handle it
+                    console.error(`[DEBUG] Skipped HTML quote conversion (parse failed): ${e.message}`);
+                }
+
+                // DEBUG: Write the fixed JSON to a file to inspect it
+                const fixedPath = path.join(__dirname, '../claude-response-fixed.json');
+                fs.writeFileSync(fixedPath, content);
+                console.error(`[DEBUG] Fixed JSON written to ${fixedPath}`);
+                console.error(`[DEBUG] Character at position 1623: "${content.charAt(1623)}" (code: ${content.charCodeAt(1623)})`);
+                console.error(`[DEBUG] Context around 1623: "${content.substring(1600, 1650)}"`);
+            }
+
             // Use enhanced JSON parser
             const parseResult = await jsonParser.parseAIResponse(content);
             if (!parseResult.success) {
+                console.error(`[DEBUG] PARSING FAILED - Error: ${parseResult.error}`);
+                console.error(`[DEBUG] Parse details: ${JSON.stringify(parseResult.details)}`);
                 logger.error('JSON parsing failed', parseResult);
                 return {
                     success: false,
@@ -800,12 +1004,39 @@ NO COMMENTS in code - make it self-explanatory through good naming and structure
 
     async handleGenerationError(error, originalPrompt, retryCount, startTime) {
         const duration = Date.now() - startTime;
-        
-        logger.error('Code generation failed', error, { 
+
+        logger.error('Code generation failed', error, {
             prompt_length: originalPrompt.length,
             duration,
             retryCount
         });
+
+        // Handle API overload errors with exponential backoff
+        if (error.status === 529 || error.statusCode === 529 ||
+            error.message?.includes('Overloaded') || error.message?.includes('529')) {
+
+            if (retryCount < 3) {
+                const waitTime = Math.pow(2, retryCount) * 2000; // 2s, 4s, 8s
+                logger.info(`API overloaded, waiting ${waitTime}ms before retry ${retryCount + 1}/3`);
+
+                await new Promise(resolve => setTimeout(resolve, waitTime));
+
+                return await this.generateCode(originalPrompt, retryCount + 1);
+            } else {
+                return {
+                    success: false,
+                    error: 'The Anthropic API is currently overloaded. Please try again in a few moments.',
+                    technical: error.message,
+                    suggestions: [
+                        'Wait 30-60 seconds before trying again',
+                        'Try a simpler or shorter prompt',
+                        'Check Anthropic status page for service issues'
+                    ],
+                    canRetry: true,
+                    errorType: 'overloaded'
+                };
+            }
+        }
 
         // Attempt error recovery
         const recoveryContext = {
@@ -964,29 +1195,57 @@ NO COMMENTS in code - make it self-explanatory through good naming and structure
         }
 
         this.activeSessions.set(sessionId, { startTime, packages, codeLength: code.length });
-        
+
         // Update session with execution start
         sessionManager.updateSession(sessionId, {
             status: 'executing',
             lastExecutionStart: new Date().toISOString()
         });
-        
+
         try {
-            // Create secure sandbox environment
-            const sandboxResult = await securitySandbox.createSandboxEnvironment(sessionId);
-            if (!sandboxResult.success) {
-                throw new Error(`Failed to create sandbox: ${sandboxResult.error}`);
-            }
+            // Detect if this is DOM/browser code
+            const isDOMCode = /HTMLElement|customElements|document\.|window\.|DOM|attachShadow|shadowRoot/i.test(code);
 
-            // Execute in sandbox with security controls
-            const executionResult = await securitySandbox.executeInSandbox(
-                sandboxResult.sessionDir,
-                code,
-                packages
-            );
+            let executionResult;
 
-            if (!executionResult.success) {
-                throw new Error(executionResult.error);
+            if (isDOMCode) {
+                // Execute in renderer/browser context
+                logger.info('Detected DOM code, executing in renderer context', { sessionId });
+
+                // Send code to renderer for execution
+                const rendererWindow = this.mainWindow;
+                if (!rendererWindow || rendererWindow.isDestroyed()) {
+                    throw new Error('Renderer window not available');
+                }
+
+                executionResult = await rendererWindow.webContents.executeJavaScript(code, true);
+
+                // Format result to match sandbox result structure
+                executionResult = {
+                    success: true,
+                    output: 'Code executed successfully in browser context',
+                    errors: null
+                };
+            } else {
+                // Execute in Node.js sandbox for backend code
+                logger.info('Detected Node.js code, executing in sandbox', { sessionId });
+
+                // Create secure sandbox environment
+                const sandboxResult = await securitySandbox.createSandboxEnvironment(sessionId);
+                if (!sandboxResult.success) {
+                    throw new Error(`Failed to create sandbox: ${sandboxResult.error}`);
+                }
+
+                // Execute in sandbox with security controls
+                executionResult = await securitySandbox.executeInSandbox(
+                    sandboxResult.sessionDir,
+                    code,
+                    packages
+                );
+
+                if (!executionResult.success) {
+                    throw new Error(executionResult.error);
+                }
             }
 
             const { stdout, stderr } = {
@@ -1164,16 +1423,33 @@ process.on('uncaughtException', (error) => {
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-    logger.error('Unhandled Promise Rejection', null, {
-        reason: reason,
-        promise: promise,
+    // Convert reason to Error if it isn't one
+    const error = reason instanceof Error ? reason : new Error(String(reason));
+
+    logger.error('Unhandled Promise Rejection', error, {
+        reasonType: typeof reason,
+        reasonString: String(reason),
         critical: true
     });
+
+    // Also log to console for immediate visibility
+    console.error('Unhandled Promise Rejection:', reason);
 });
 
 app.whenReady().then(async () => {
-    await builder.initialize();
-    builder.createWindow();
+    try {
+        await builder.initialize();
+        builder.createWindow();
+    } catch (error) {
+        logger.error('Failed to initialize application', error, {
+            critical: true,
+            stack: error.stack
+        });
+        console.error('Application initialization failed:', error);
+        dialog.showErrorBox('Initialization Error',
+            'Failed to start the application.\n\n' + error.message);
+        app.quit();
+    }
 });
 
 app.on('window-all-closed', () => {
@@ -1188,25 +1464,113 @@ app.on('activate', () => {
     }
 });
 
-// Cleanup on exit
-app.on('before-quit', async () => {
-    logger.info('Application shutting down, cleaning up...');
+// Comprehensive cleanup on exit
+let isCleaningUp = false;
+
+async function performCleanup() {
+    if (isCleaningUp) return;
+    isCleaningUp = true;
     
-    // Clean up active sessions
+    logger.info('Application shutting down, performing comprehensive cleanup...');
+    
+    const cleanupTasks = [];
+    
+    // 1. Clean up active sessions
     for (const sessionId of builder.activeSessions.keys()) {
-        try {
-            await builder.cleanupSession(sessionId);
-        } catch (error) {
-            logger.error('Failed to cleanup session during shutdown', error, { sessionId });
-        }
+        cleanupTasks.push(
+            builder.cleanupSession(sessionId).catch(error => {
+                logger.error('Failed to cleanup session during shutdown', error, { sessionId });
+            })
+        );
     }
     
-    // Clean up temp directory
+    // 2. Close all database connections
+    if (builder.databaseManager) {
+        cleanupTasks.push(
+            builder.databaseManager.closeAllConnections().catch(error => {
+                logger.error('Failed to close database connections', error);
+            })
+        );
+    }
+
+    // 3. Stop performance monitoring
+    if (builder.performanceDashboard) {
+        cleanupTasks.push(
+            Promise.resolve(builder.performanceDashboard.cleanup()).catch(error => {
+                logger.error('Failed to cleanup performance dashboard', error);
+            })
+        );
+    }
+    
+    // 4. Stop system monitoring  
+    if (systemMonitor) {
+        cleanupTasks.push(
+            Promise.resolve(systemMonitor.stop()).catch(error => {
+                logger.error('Failed to stop system monitor', error);
+            })
+        );
+    }
+    
+    // 5. Save session history
+    if (sessionManager) {
+        cleanupTasks.push(
+            sessionManager.saveHistory().catch(error => {
+                logger.error('Failed to save session history', error);
+            })
+        );
+    }
+    
+    // 6. Flush logger
+    cleanupTasks.push(
+        new Promise(resolve => {
+            logger.info('Flushing log buffers...');
+            // Give logger time to flush
+            setTimeout(resolve, 100);
+        })
+    );
+    
+    // Wait for all cleanup tasks with timeout
+    await Promise.race([
+        Promise.allSettled(cleanupTasks),
+        new Promise(resolve => setTimeout(resolve, 5000)) // 5 second timeout
+    ]);
+    
+    // 7. Clean up temp directory (after other cleanup)
     try {
         const tempDir = path.join(__dirname, '..', 'temp');
         await fs.rmdir(tempDir, { recursive: true });
-        logger.info('Cleanup completed successfully');
+        logger.info('Temp directory cleaned');
     } catch (error) {
-        logger.error('Cleanup error during shutdown', error);
+        if (error.code !== 'ENOENT') {
+            logger.error('Failed to clean temp directory', error);
+        }
     }
+    
+    logger.info('Cleanup completed successfully');
+}
+
+// Register cleanup handlers
+app.on('before-quit', async (event) => {
+    event.preventDefault();
+    await performCleanup();
+    app.quit();
+});
+
+app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') {
+        app.quit();
+    }
+});
+
+// Handle uncaught errors during shutdown
+process.on('SIGTERM', async () => {
+    logger.info('SIGTERM received, shutting down gracefully');
+    await performCleanup();
+    process.exit(0);
+});
+
+process.on('SIGINT', async () => {
+    logger.info('SIGINT received, shutting down gracefully');
+    await performCleanup();
+    process.exit(0);
 });

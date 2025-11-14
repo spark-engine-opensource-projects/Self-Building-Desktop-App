@@ -109,11 +109,18 @@ class ErrorBoundary {
             url: window.location.href
         };
 
-        // Add to error history
+        // Add to error history with proper cleanup
         this.errorHistory.push(errorInfo);
-        if (this.errorHistory.length > 100) {
-            this.errorHistory.shift(); // Keep last 100 errors
+        
+        // Keep only last 50 errors to prevent memory growth
+        const MAX_ERROR_HISTORY = 50;
+        if (this.errorHistory.length > MAX_ERROR_HISTORY) {
+            // Remove oldest errors
+            this.errorHistory = this.errorHistory.slice(-MAX_ERROR_HISTORY);
         }
+        
+        // Clean up old error UI elements
+        this.cleanupOldErrorUI();
 
         // Log error if enabled
         if (this.options.logErrors) {
@@ -548,6 +555,21 @@ class ErrorBoundary {
     hideErrorUI() {
         const existing = document.querySelectorAll('.error-boundary-container');
         existing.forEach(el => el.remove());
+    }
+    
+    cleanupOldErrorUI() {
+        // Remove error UI elements older than 1 minute
+        const errorContainers = document.querySelectorAll('.error-boundary-container');
+        const now = Date.now();
+        
+        errorContainers.forEach(container => {
+            const errorId = container.getAttribute('data-error-id');
+            const errorInfo = this.errorHistory.find(e => e.errorId === errorId);
+            
+            if (!errorInfo || (now - new Date(errorInfo.timestamp).getTime() > 60000)) {
+                container.remove();
+            }
+        });
     }
 
     logError(errorInfo) {

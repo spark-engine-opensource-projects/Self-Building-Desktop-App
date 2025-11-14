@@ -3,11 +3,16 @@ const path = require('path');
 const fs = require('fs').promises;
 const { v4: uuidv4 } = require('uuid');
 const logger = require('./logger');
+const sqlValidator = require('./sqlValidator');
+const databaseOptimizer = require('./databaseOptimizer');
 
 class DatabaseManager {
     constructor(dataPath = null, options = {}) {
         this.dataPath = dataPath || path.join(__dirname, '..', '..', 'data');
         this.connections = new Map(); // Multiple database connections
+        this.connectionTimestamps = new Map(); // Track connection creation times
+        this.maxConnectionAge = options.maxConnectionAge || 30 * 60 * 1000; // 30 minutes
+        this.maxConnections = options.maxConnections || 10;
         this.schemas = new Map(); // Track schemas for each database
         this.migrations = new Map(); // Track migrations
         
@@ -298,8 +303,27 @@ class DatabaseManager {
             // Validate database name for security
             this.validateDatabaseName(dbName);
             
+            // Check if connection exists and is still valid
             if (this.connections.has(dbName)) {
-                return this.connections.get(dbName);
+                const timestamp = this.connectionTimestamps.get(dbName);
+                const age = Date.now() - timestamp;
+                
+                // Return existing connection if still fresh
+                if (age < this.maxConnectionAge) {
+                    return this.connections.get(dbName);
+                } else {
+                    // Close stale connection
+                    logger.info('Closing stale database connection', { 
+                        database: dbName, 
+                        age: Math.round(age / 1000) + 's' 
+                    });
+                    this.closeDatabase(dbName);
+                }
+            }
+            
+            // Check connection limit
+            if (this.connections.size >= this.maxConnections) {
+                this.closeOldestConnection();
             }
 
             const dbPath = path.join(this.dataPath, `${dbName}.db`);
@@ -312,7 +336,12 @@ class DatabaseManager {
             this.createMetadataTable(db);
             
             this.connections.set(dbName, db);
-            logger.info('Database connected', { database: dbName, path: dbPath });
+            this.connectionTimestamps.set(dbName, Date.now());
+            logger.info('Database connected', { 
+                database: dbName, 
+                path: dbPath,
+                totalConnections: this.connections.size 
+            });
             
             return db;
         } catch (error) {
@@ -839,13 +868,10 @@ class DatabaseManager {
             const schema = await this.getTableSchema(db, tableName);
             const validatedData = this.validateAndTransformData(data, schema);
             
-            const columns = Object.keys(validatedData).join(', ');
-            const placeholders = Object.keys(validatedData).map(() => '?').join(', ');
-            const values = Object.values(validatedData);
-            
-            const insertSQL = `INSERT INTO ${tableName} (${columns}) VALUES (${placeholders})`;
-            const stmt = db.prepare(insertSQL);
-            const result = stmt.run(...values);
+            // Use safe query builder for insert
+            const safeQuery = sqlValidator.buildSafeInsert(tableName, validatedData);
+            const stmt = db.prepare(safeQuery.sql);
+            const result = stmt.run(...safeQuery.params);
             
             logger.info('Data inserted successfully', { 
                 database: dbName, 
@@ -1178,18 +1204,16 @@ class DatabaseManager {
         try {
             const db = await this.connectDatabase(dbName);
             
-            // Basic SQL injection protection
-            if (this.containsDangerousSQL(sql)) {
-                throw new Error('SQL query contains potentially dangerous operations');
-            }
+            // Validate and sanitize SQL query
+            const safeQuery = sqlValidator.prepareSafeQuery(sql, params);
             
-            const stmt = db.prepare(sql);
+            const stmt = db.prepare(safeQuery.sql);
             
             if (sql.trim().toUpperCase().startsWith('SELECT')) {
-                const result = stmt.all(...params);
+                const result = stmt.all(...safeQuery.params);
                 return { success: true, data: result, type: 'select' };
             } else {
-                const result = stmt.run(...params);
+                const result = stmt.run(...safeQuery.params);
                 return { 
                     success: true, 
                     changes: result.changes,
@@ -1253,26 +1277,70 @@ class DatabaseManager {
     }
 
     /**
+     * Close oldest connection to make room
+     */
+    closeOldestConnection() {
+        let oldestDb = null;
+        let oldestTime = Date.now();
+        
+        for (const [dbName, timestamp] of this.connectionTimestamps) {
+            if (timestamp < oldestTime) {
+                oldestTime = timestamp;
+                oldestDb = dbName;
+            }
+        }
+        
+        if (oldestDb) {
+            logger.info('Closing oldest connection to make room', { database: oldestDb });
+            this.closeDatabase(oldestDb);
+        }
+    }
+    
+    /**
      * Close database connection
      */
     closeDatabase(dbName) {
         if (this.connections.has(dbName)) {
-            const db = this.connections.get(dbName);
-            db.close();
-            this.connections.delete(dbName);
-            logger.info('Database connection closed', { database: dbName });
+            try {
+                const db = this.connections.get(dbName);
+                db.close();
+                this.connections.delete(dbName);
+                this.connectionTimestamps.delete(dbName);
+                logger.info('Database connection closed', { 
+                    database: dbName,
+                    remainingConnections: this.connections.size
+                });
+            } catch (error) {
+                logger.error('Error closing database connection', { database: dbName, error });
+            }
         }
     }
 
     /**
      * Close all database connections
      */
-    closeAllConnections() {
-        for (const [dbName, db] of this.connections) {
-            db.close();
-            logger.info('Database connection closed', { database: dbName });
+    async closeAllConnections() {
+        logger.info('Closing all database connections', { 
+            count: this.connections.size 
+        });
+        
+        const closePromises = [];
+        
+        for (const [dbName] of this.connections) {
+            closePromises.push(this.closeDatabase(dbName));
         }
+        
+        await Promise.allSettled(closePromises);
+        
+        // Clear all tracking maps
         this.connections.clear();
+        this.connectionTimestamps.clear();
+        this.schemas.clear();
+        this.migrations.clear();
+        
+        logger.info('All database connections closed');
+        
+        return true;
     }
 }
 

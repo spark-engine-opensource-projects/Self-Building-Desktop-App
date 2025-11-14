@@ -1,4 +1,5 @@
-const logger = require('./logger');
+// Browser-safe logger (logger is only available in Node.js context)
+const logger = typeof window !== 'undefined' && window.devLog ? window.devLog : console;
 
 class SecureDOMExecutor {
     constructor() {

@@ -6,6 +6,22 @@ const logger = require('./logger');
  */
 class IPCValidator {
     constructor() {
+        // Maximum input sizes
+        this.MAX_STRING_LENGTH = 100000;
+        this.MAX_ARRAY_LENGTH = 10000;
+        this.MAX_OBJECT_DEPTH = 10;
+        
+        // Dangerous patterns to block
+        this.dangerousPatterns = [
+            /<script[^>]*>.*?<\/script>/gi,  // Script tags
+            /javascript:/gi,                   // JavaScript protocol
+            /on\w+\s*=/gi,                   // Event handlers
+            /eval\s*\(/gi,                   // Eval calls
+            /new\s+Function/gi,               // Function constructor
+            /__proto__/gi,                     // Prototype pollution
+            /constructor\[/gi,                // Constructor access
+        ];
+        
         this.validators = {
             string: (value, options = {}) => {
                 if (typeof value !== 'string') return false;
@@ -43,7 +59,13 @@ class IPCValidator {
         // Schema definitions for each IPC endpoint
         this.schemas = {
             'set-api-key': {
-                apiKey: { type: 'string', minLength: 1, maxLength: 200 }
+                apiKey: { 
+                    type: 'string', 
+                    minLength: 1, 
+                    maxLength: 200,
+                    pattern: /^[a-zA-Z0-9-_]+$/,
+                    sanitize: true
+                }
             },
             'generate-code': {
                 prompt: { type: 'string', minLength: 1, maxLength: 10000 }
@@ -86,6 +108,108 @@ class IPCValidator {
                 config: { type: 'object' }
             }
         };
+    }
+
+    /**
+     * Sanitize a string value
+     */
+    sanitizeString(value, maxLength = this.MAX_STRING_LENGTH) {
+        if (typeof value !== 'string') return '';
+        
+        // Truncate to max length
+        let sanitized = value.substring(0, maxLength);
+        
+        // Remove dangerous patterns
+        for (const pattern of this.dangerousPatterns) {
+            sanitized = sanitized.replace(pattern, '');
+        }
+        
+        // Remove control characters except newlines and tabs
+        sanitized = sanitized.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
+        
+        // Escape HTML entities
+        sanitized = sanitized
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#x27;')
+            .replace(/\//g, '&#x2F;');
+        
+        return sanitized;
+    }
+
+    /**
+     * Sanitize an object recursively
+     */
+    sanitizeObject(obj, depth = 0) {
+        if (depth > this.MAX_OBJECT_DEPTH) {
+            throw new Error('Object depth exceeds maximum allowed');
+        }
+        
+        if (obj === null || typeof obj !== 'object') {
+            return obj;
+        }
+        
+        if (Array.isArray(obj)) {
+            if (obj.length > this.MAX_ARRAY_LENGTH) {
+                obj = obj.slice(0, this.MAX_ARRAY_LENGTH);
+            }
+            return obj.map(item => this.sanitizeObject(item, depth + 1));
+        }
+        
+        const sanitized = {};
+        for (const [key, value] of Object.entries(obj)) {
+            // Skip dangerous keys
+            if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
+                continue;
+            }
+            
+            // Sanitize key
+            const sanitizedKey = this.sanitizeString(key, 100);
+            
+            // Sanitize value based on type
+            if (typeof value === 'string') {
+                sanitized[sanitizedKey] = this.sanitizeString(value);
+            } else if (typeof value === 'object') {
+                sanitized[sanitizedKey] = this.sanitizeObject(value, depth + 1);
+            } else if (typeof value === 'number') {
+                sanitized[sanitizedKey] = isFinite(value) ? value : 0;
+            } else if (typeof value === 'boolean') {
+                sanitized[sanitizedKey] = value;
+            }
+            // Skip functions and undefined values
+        }
+        
+        return sanitized;
+    }
+
+    /**
+     * Validate email format
+     */
+    isValidEmail(email) {
+        const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+        return emailRegex.test(email) && email.length <= 254;
+    }
+
+    /**
+     * Validate URL format
+     */
+    isValidUrl(url) {
+        try {
+            const parsed = new URL(url);
+            return ['http:', 'https:'].includes(parsed.protocol);
+        } catch {
+            return false;
+        }
+    }
+
+    /**
+     * Validate UUID format
+     */
+    isValidUuid(uuid) {
+        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        return uuidRegex.test(uuid);
     }
 
     /**

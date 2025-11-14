@@ -1,6 +1,6 @@
 const logger = require('../utils/logger');
 const configManager = require('../utils/configManager');
-const cacheManager = require('../utils/cacheManager');
+const cacheManager = require('../utils/advancedCache');
 const systemMonitor = require('../utils/systemMonitor');
 const codeEnhancer = require('../utils/codeEnhancer');
 const jsonParser = require('../utils/jsonParser');
@@ -89,12 +89,37 @@ class CodeGenerationModule {
             });
 
             const content = response.content[0].text;
-            logger.debug('AI response received', { contentLength: content.length });
-            
+
+            // Log full response for debugging - use console.error to ensure visibility
+            console.error('\n========== CLAUDE RESPONSE START ==========');
+            console.error(content);
+            console.error('========== CLAUDE RESPONSE END ==========\n');
+
+            // ALSO write to file as backup
+            const fs = require('fs');
+            const path = require('path');
+            const debugPath = path.join(__dirname, '../../claude-response-debug.txt');
+            fs.writeFileSync(debugPath, `=== RESPONSE AT ${new Date().toISOString()} ===\n${content}\n=== END ===\n`, { flag: 'a' });
+            console.error(`[DEBUG] Response written to ${debugPath}`);
+
+            logger.info('AI response received', {
+                contentLength: content.length,
+                contentPreview: content.substring(0, 500)
+            });
+
             // Use enhanced JSON parser
             const parseResult = await jsonParser.parseAIResponse(content);
             if (!parseResult.success) {
-                logger.error('JSON parsing failed', parseResult);
+                console.error('\n========== PARSING FAILED ==========');
+                console.error('Parse error:', parseResult.error);
+                console.error('Parse details:', parseResult.details);
+                console.error('========== END PARSING DEBUG ==========\n');
+
+                logger.error('JSON parsing failed', {
+                    error: parseResult.error,
+                    details: parseResult.details,
+                    fullResponse: content
+                });
                 return {
                     success: false,
                     error: `Failed to parse AI response: ${parseResult.error}`,
@@ -169,12 +194,43 @@ class CodeGenerationModule {
 
     async handleGenerationError(error, originalPrompt, retryCount, startTime) {
         const duration = Date.now() - startTime;
-        
-        logger.error('Code generation failed', error, { 
+
+        logger.error('Code generation failed', error, {
             prompt_length: originalPrompt.length,
             duration,
-            retryCount
+            retryCount,
+            status: error.status,
+            statusCode: error.statusCode,
+            errorType: error.error?.type
         });
+
+        // Handle API overload errors with exponential backoff
+        if (error.status === 529 || error.statusCode === 529 ||
+            error.error?.type === 'overloaded_error' ||
+            error.message?.includes('Overloaded')) {
+
+            if (retryCount < 3) {
+                const waitTime = Math.pow(2, retryCount) * 2000; // 2s, 4s, 8s
+                logger.info(`API overloaded, waiting ${waitTime}ms before retry ${retryCount + 1}/3`);
+
+                await new Promise(resolve => setTimeout(resolve, waitTime));
+
+                return await this.generateCode(originalPrompt, retryCount + 1);
+            } else {
+                return {
+                    success: false,
+                    error: 'The Anthropic API is currently overloaded. Please try again in a few moments.',
+                    technical: error.message,
+                    suggestions: [
+                        'Wait 30-60 seconds before trying again',
+                        'Try a simpler or shorter prompt',
+                        'Check Anthropic status page for service issues'
+                    ],
+                    canRetry: true,
+                    errorType: 'overloaded'
+                };
+            }
+        }
 
         // Attempt error recovery
         const recoveryContext = {
@@ -232,16 +288,14 @@ class CodeGenerationModule {
     }
 
     getSystemPrompt() {
-        return `You are an advanced UI component generation assistant. Generate complete, production-ready, interactive web components for desktop applications.
+        return `You are a UI component generation assistant.
 
-Respond with a JSON object in this EXACT format:
-{
-  "packages": [],
-  "code": "your complete JavaScript code here",
-  "description": "Brief description of the component functionality"
-}
+CRITICAL: You MUST respond ONLY with a valid JSON object. NO explanatory text before or after. NO markdown code blocks. ONLY the raw JSON.
 
-CRITICAL REQUIREMENTS:
+Your response must be EXACTLY in this format:
+{"packages":[],"code":"your JavaScript code here","description":"what it does"}
+
+REQUIREMENTS:
 
 🏗️ ARCHITECTURE:
 - Generate complete, self-contained UI components

@@ -1,16 +1,36 @@
-# API Documentation - IPC Endpoints
-
-This document describes all Inter-Process Communication (IPC) endpoints available in the Dynamic App Builder.
+# API Documentation - Self-Building Desktop Application
 
 ## Table of Contents
-- [Core Functionality](#core-functionality)
-- [Session Management](#session-management)
-- [Configuration](#configuration)
-- [Security](#security)
-- [Monitoring](#monitoring)
-- [Cache Management](#cache-management)
+1. [Overview](#overview)
+2. [Core Modules](#core-modules)
+3. [Utility Modules](#utility-modules)
+4. [Security Modules](#security-modules)
+5. [Feature Modules](#feature-modules)
+6. [IPC Communication](#ipc-communication)
+7. [Error Codes](#error-codes)
+8. [Examples](#examples)
 
-## Core Functionality
+---
+
+## Overview
+
+The Self-Building Desktop Application provides a comprehensive API for AI-powered code generation, project management, and development automation. This documentation covers all public APIs, their usage, and best practices.
+
+### Base Configuration
+```javascript
+{
+  apiKey: 'your-anthropic-api-key',
+  apiEndpoint: 'https://api.anthropic.com',
+  dataPath: './data',
+  logsPath: './logs',
+  maxRetries: 3,
+  timeout: 30000
+}
+```
+
+---
+
+## Core Modules
 
 ### `set-api-key`
 Sets the Anthropic API key for code generation.

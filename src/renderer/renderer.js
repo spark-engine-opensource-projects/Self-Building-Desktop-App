@@ -1,5 +1,6 @@
-// Import conditional logger for development
-const rendererLogger = require('../utils/rendererLogger');
+// Use global logger and performance utils (loaded via script tags)
+// Note: window.rendererLogger is available from rendererLogger.js
+// window.UIPerformanceMonitor is available from performanceUtils.js
 
 class DynamicAppRenderer {
     constructor() {
@@ -9,6 +10,12 @@ class DynamicAppRenderer {
         this.isApiConfigured = false;
         this.secureDOMExecutor = null;
         this.theme = 'light';
+
+        // Performance optimization
+        if (window.UIPerformanceMonitor) {
+            this.performanceMonitor = window.UIPerformanceMonitor;
+            this.performanceMonitor.start();
+        }
         
         this.initializeElements();
         this.setupEventListeners();
@@ -21,9 +28,9 @@ class DynamicAppRenderer {
         // Load the secure DOM executor
         if (typeof SecureDOMExecutor !== 'undefined') {
             this.secureDOMExecutor = new SecureDOMExecutor();
-            rendererLogger.debug('Secure DOM executor initialized');
+            window.rendererLogger.debug('Secure DOM executor initialized');
         } else {
-            rendererLogger.warn('SecureDOMExecutor not available, falling back to basic execution');
+            window.rendererLogger.warn('SecureDOMExecutor not available, falling back to basic execution');
         }
     }
 
@@ -128,14 +135,15 @@ class DynamicAppRenderer {
         this.clearBtn.addEventListener('click', () => this.handleClear());
         this.newSessionBtn.addEventListener('click', () => this.handleNewSession());
         this.themeToggle.addEventListener('click', () => this.toggleTheme());
-        
-        // Enter key support
+
+        // Enter key support for API key input
         this.apiKeyInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') {
                 this.handleSetApiKey();
             }
         });
-        
+
+        // Ctrl+Enter support for prompt input
         this.promptInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter' && e.ctrlKey) {
                 this.handleGenerateCode();
@@ -148,7 +156,7 @@ class DynamicAppRenderer {
         this.showDbManagerBtn.addEventListener('click', () => this.showDatabaseManager());
         this.showSchemaGeneratorBtn.addEventListener('click', () => this.showSchemaGenerator());
         
-        // Database Manager
+        // Database Manager with debouncing
         this.databaseSelect.addEventListener('change', () => this.handleDatabaseChange());
         this.createDatabaseBtn.addEventListener('click', () => this.handleCreateDatabase());
         this.refreshDatabasesBtn.addEventListener('click', () => this.loadDatabases());
@@ -459,7 +467,7 @@ class DynamicAppRenderer {
             
             this.showNotification(`Thank you for your feedback! (${rating === 'good' ? '👍' : '👎'})`, 'info');
         } catch (error) {
-            rendererLogger.warn('Failed to submit feedback:', error);
+            window.rendererLogger.warn('Failed to submit feedback:', error);
         }
     }
 
@@ -545,12 +553,12 @@ class DynamicAppRenderer {
             try {
                 await window.electronAPI.cleanupSession(this.currentSession);
             } catch (error) {
-                rendererLogger.warn('Failed to cleanup old session:', error);
+                window.rendererLogger.warn('Failed to cleanup old session:', error);
             }
         }
 
         // Create new session
-        this.currentSession = window.electronAPI.generateSessionId();
+        this.currentSession = await window.electronAPI.generateSessionId();
         this.sessionId.textContent = this.currentSession;
         this.handleClear();
         this.showNotification('New session started', 'info');
@@ -576,7 +584,7 @@ class DynamicAppRenderer {
                 return await this.executeFunctionBased(code);
             }
         } catch (error) {
-            rendererLogger.error('Secure DOM execution failed:', error);
+            window.rendererLogger.error('Secure DOM execution failed:', error);
             return {
                 success: false,
                 error: error.message,
@@ -709,203 +717,6 @@ class DynamicAppRenderer {
             }, 300);
         }, 3000);
     }
-}
-
-// Initialize the application when DOM is loaded
-document.addEventListener('DOMContentLoaded', () => {
-    window.app = new DynamicAppRenderer();
-});
-
-// Add notification styles dynamically
-const notificationStyles = `
-.notification {
-    position: fixed;
-    top: 20px;
-    right: 20px;
-    padding: 1rem 1.5rem;
-    border-radius: 8px;
-    color: white;
-    font-weight: 500;
-    z-index: 1000;
-    transform: translateX(100%);
-    transition: transform 0.3s ease;
-    max-width: 400px;
-    word-wrap: break-word;
-}
-
-.notification.show {
-    transform: translateX(0);
-}
-
-.notification-success {
-    background: #10b981;
-}
-
-.notification-error {
-    background: #ef4444;
-}
-
-.notification-info {
-    background: #3b82f6;
-}
-
-.notification-warning {
-    background: #f59e0b;
-}
-
-/* Progressive feedback styles */
-.generation-progress {
-    position: fixed;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    background: white;
-    padding: 20px;
-    border-radius: 12px;
-    box-shadow: 0 10px 25px rgba(0,0,0,0.2);
-    z-index: 1001;
-    min-width: 300px;
-    text-align: center;
-}
-
-.progress-content {
-    display: flex;
-    align-items: center;
-    gap: 15px;
-}
-
-.progress-spinner {
-    width: 24px;
-    height: 24px;
-    border: 3px solid #e2e8f0;
-    border-top: 3px solid #3b82f6;
-    border-radius: 50%;
-    animation: spin 1s linear infinite;
-}
-
-@keyframes spin {
-    0% { transform: rotate(0deg); }
-    100% { transform: rotate(360deg); }
-}
-
-.progress-message {
-    font-weight: 500;
-    color: #374151;
-}
-
-/* Enhanced error styles */
-.enhanced-error {
-    background: #fef2f2;
-    border: 1px solid #fecaca;
-    border-radius: 8px;
-    padding: 20px;
-    margin: 20px 0;
-    color: #991b1b;
-}
-
-.error-header {
-    display: flex;
-    justify-content: between;
-    align-items: center;
-    margin-bottom: 15px;
-}
-
-.error-header h3 {
-    margin: 0;
-    color: #dc2626;
-}
-
-.error-type {
-    background: #dc2626;
-    color: white;
-    padding: 4px 8px;
-    border-radius: 4px;
-    font-size: 12px;
-    text-transform: uppercase;
-}
-
-.error-message {
-    font-weight: 500;
-    margin-bottom: 15px;
-}
-
-.error-suggestions {
-    background: #f0f9ff;
-    border: 1px solid #bae6fd;
-    border-radius: 6px;
-    padding: 15px;
-    margin: 15px 0;
-}
-
-.error-suggestions h4 {
-    margin: 0 0 10px 0;
-    color: #0369a1;
-}
-
-.error-suggestions ul {
-    margin: 0;
-    padding-left: 20px;
-}
-
-.error-suggestions li {
-    margin-bottom: 5px;
-    color: #0f172a;
-}
-
-.error-actions {
-    margin-top: 15px;
-}
-
-.error-technical {
-    margin-top: 15px;
-    font-size: 14px;
-}
-
-.error-technical summary {
-    cursor: pointer;
-    color: #6b7280;
-}
-
-.error-technical pre {
-    background: #f9fafb;
-    padding: 10px;
-    border-radius: 4px;
-    font-size: 12px;
-    overflow-x: auto;
-}
-
-/* Generation metadata styles */
-.generation-metadata {
-    background: #f0f9ff;
-    border: 1px solid #bae6fd;
-    border-radius: 6px;
-    padding: 15px;
-    margin: 10px 0;
-}
-
-.metadata-item {
-    margin-bottom: 8px;
-    font-size: 14px;
-    color: #0f172a;
-}
-
-.metadata-item:last-child {
-    margin-bottom: 0;
-}
-
-/* Feedback buttons */
-.feedback-buttons {
-    display: flex;
-    gap: 8px;
-    margin-left: 10px;
-}
-
-.feedback-buttons .btn {
-    padding: 6px 12px;
-    font-size: 14px;
-    min-width: auto;
-}
-`;
 
     // ================================
     // DATABASE FUNCTIONALITY
@@ -1298,11 +1109,11 @@ const notificationStyles = `
             window.electronAPI.updateConfig({
                 ui: { darkMode: theme === 'dark' }
             }).catch(error => {
-                rendererLogger.warn('Failed to save theme preference:', error);
+                window.rendererLogger.warn('Failed to save theme preference:', error);
             });
         }
         
-        rendererLogger.debug(`Theme switched to: ${theme}`);
+        window.rendererLogger.debug(`Theme switched to: ${theme}`);
     }
 }
 

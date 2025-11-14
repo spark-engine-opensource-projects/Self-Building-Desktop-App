@@ -3,6 +3,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 const logger = require('./logger');
 const configManager = require('./configManager');
+const pathValidator = require('./pathValidator');
 
 class SecuritySandbox {
     constructor() {
@@ -202,11 +203,14 @@ class SecuritySandbox {
     }
 
     async createSandboxEnvironment(sessionId) {
-        const sessionDir = path.join(__dirname, '..', '..', 'temp', sessionId);
+        // Use path validator to safely create session directory
+        const sessionDir = await pathValidator.createSafeDirectory(
+            sessionId, 
+            'temp', 
+            { mode: 0o700 }
+        );
         
         try {
-            // Create session directory
-            await fs.mkdir(sessionDir, { recursive: true });
             
             // Create sandbox package.json with restricted permissions
             const sandboxPackageJson = {
@@ -219,9 +223,11 @@ class SecuritySandbox {
                 dependencies: {}
             };
             
-            await fs.writeFile(
-                path.join(sessionDir, 'package.json'),
-                JSON.stringify(sandboxPackageJson, null, 2)
+            await pathValidator.safeWriteFile(
+                'package.json',
+                JSON.stringify(sandboxPackageJson, null, 2),
+                'temp',
+                { flag: 'w' }
             );
             
             // Create .npmrc to restrict package sources
@@ -232,7 +238,12 @@ fund=false
 optional=false
 save-exact=true
 `;
-            await fs.writeFile(path.join(sessionDir, '.npmrc'), npmrcContent.trim());
+            await pathValidator.safeWriteFile(
+                '.npmrc',
+                npmrcContent.trim(),
+                'temp',
+                { flag: 'w' }
+            );
             
             logger.info('Sandbox environment created', { sessionId, sessionDir });
             
@@ -253,9 +264,13 @@ save-exact=true
                 await this.installPackagesSecurely(sessionDir, packages);
             }
             
-            // Write code to file
-            const codeFile = path.join(sessionDir, 'generated.js');
-            await fs.writeFile(codeFile, code);
+            // Write code to file safely
+            const codeFile = await pathValidator.safeWriteFile(
+                'generated.js',
+                code,
+                'temp',
+                { flag: 'w' }
+            );
             
             // Execute with strict limits
             const result = await this.executeWithLimits(sessionDir, config);
