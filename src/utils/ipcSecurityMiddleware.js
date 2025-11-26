@@ -55,17 +55,49 @@ class IPCSecurityMiddleware {
     }
 
     /**
-     * Validate CSRF token
+     * Validate CSRF token with proper error handling
      */
     validateCSRFToken(senderId, token) {
-        const validToken = this.csrfTokens.get(senderId);
-        if (!validToken) {
+        try {
+            // Validate inputs
+            if (!token || typeof token !== 'string') {
+                return false;
+            }
+
+            const validToken = this.csrfTokens.get(senderId);
+            if (!validToken) {
+                return false;
+            }
+
+            // Validate hex format before creating buffers
+            const hexPattern = /^[a-fA-F0-9]+$/;
+            if (!hexPattern.test(token) || !hexPattern.test(validToken)) {
+                logger.logSecurityEvent('invalid_csrf_token_format', { senderId });
+                return false;
+            }
+
+            // Ensure tokens are same length (required for timingSafeEqual)
+            if (token.length !== validToken.length) {
+                return false;
+            }
+
+            const tokenBuffer = Buffer.from(token, 'hex');
+            const validTokenBuffer = Buffer.from(validToken, 'hex');
+
+            // Double-check buffer lengths match
+            if (tokenBuffer.length !== validTokenBuffer.length) {
+                return false;
+            }
+
+            return crypto.timingSafeEqual(tokenBuffer, validTokenBuffer);
+        } catch (error) {
+            // Log but don't expose error details
+            logger.logSecurityEvent('csrf_validation_error', {
+                senderId,
+                error: error.message
+            });
             return false;
         }
-        return crypto.timingSafeEqual(
-            Buffer.from(token, 'hex'),
-            Buffer.from(validToken, 'hex')
-        );
     }
 
     /**
@@ -143,9 +175,16 @@ class IPCSecurityMiddleware {
                     // Object validations
                     if (rules.type === 'object') {
                         // Check for prototype pollution
-                        if (value.hasOwnProperty('__proto__') ||
-                            value.hasOwnProperty('constructor') ||
-                            value.hasOwnProperty('prototype')) {
+                        // Use Object.keys and check for forbidden property names
+                        const forbiddenProps = ['__proto__', 'constructor', 'prototype'];
+                        const objKeys = Object.keys(value);
+                        for (const prop of forbiddenProps) {
+                            if (objKeys.includes(prop) || prop in value && Object.prototype.hasOwnProperty.call(value, prop)) {
+                                throw new Error(`${key} contains forbidden properties`);
+                            }
+                        }
+                        // Also check if the object's prototype was modified
+                        if (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) {
                             throw new Error(`${key} contains forbidden properties`);
                         }
 
@@ -421,4 +460,7 @@ class IPCSecurityMiddleware {
     };
 }
 
-module.exports = new IPCSecurityMiddleware();
+const instance = new IPCSecurityMiddleware();
+// Expose static schemas through instance for convenience
+instance.schemas = IPCSecurityMiddleware.schemas;
+module.exports = instance;

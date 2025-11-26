@@ -1,6 +1,7 @@
 const fs = require('fs').promises;
 const path = require('path');
 const { spawn } = require('child_process');
+const vm = require('vm');
 const logger = require('./logger');
 const configManager = require('./configManager');
 const pathValidator = require('./pathValidator');
@@ -31,6 +32,22 @@ class SecuritySandbox {
             'tls',
             'worker_threads'
         ];
+
+        // Allowlist of packages with pinned versions for security
+        this.allowedPackageVersions = {
+            'lodash': '^4.17.21',
+            'axios': '^1.6.0',
+            'chart.js': '^4.4.0',
+            'moment': '^2.29.4',
+            'uuid': '^9.0.1',
+            'express': '^4.18.2',
+            'cors': '^2.8.5',
+            'body-parser': '^1.20.2',
+            'helmet': '^7.1.0',
+            'date-fns': '^2.30.0',
+            'ramda': '^0.29.1',
+            'validator': '^13.11.0'
+        };
     }
 
     scanCode(code) {
@@ -117,8 +134,8 @@ class SecuritySandbox {
         const issues = [];
         
         try {
-            // Validate syntax by attempting to create a function
-            new Function(code);
+            // Validate syntax using vm.Script (parses without executing)
+            new vm.Script(code, { filename: 'user-code.js' });
             
             // Check for specific dangerous patterns in the code string
             const dangerousCallsPatterns = [
@@ -205,13 +222,12 @@ class SecuritySandbox {
     async createSandboxEnvironment(sessionId) {
         // Use path validator to safely create session directory
         const sessionDir = await pathValidator.createSafeDirectory(
-            sessionId, 
-            'temp', 
+            sessionId,
+            'temp',
             { mode: 0o700 }
         );
-        
+
         try {
-            
             // Create sandbox package.json with restricted permissions
             const sandboxPackageJson = {
                 name: `sandbox-${sessionId}`,
@@ -222,33 +238,33 @@ class SecuritySandbox {
                 },
                 dependencies: {}
             };
-            
-            await pathValidator.safeWriteFile(
-                'package.json',
+
+            // Write files directly to sessionDir (the validated session directory)
+            const packageJsonPath = path.join(sessionDir, 'package.json');
+            await fs.writeFile(
+                packageJsonPath,
                 JSON.stringify(sandboxPackageJson, null, 2),
-                'temp',
-                { flag: 'w' }
+                { encoding: 'utf8', mode: 0o600 }
             );
-            
+
             // Create .npmrc to restrict package sources
-            const npmrcContent = `
-registry=https://registry.npmjs.org/
+            const npmrcContent = `registry=https://registry.npmjs.org/
 audit=false
 fund=false
 optional=false
-save-exact=true
-`;
-            await pathValidator.safeWriteFile(
-                '.npmrc',
-                npmrcContent.trim(),
-                'temp',
-                { flag: 'w' }
+save-exact=true`;
+
+            const npmrcPath = path.join(sessionDir, '.npmrc');
+            await fs.writeFile(
+                npmrcPath,
+                npmrcContent,
+                { encoding: 'utf8', mode: 0o600 }
             );
-            
+
             logger.info('Sandbox environment created', { sessionId, sessionDir });
-            
+
             return { success: true, sessionDir };
-            
+
         } catch (error) {
             logger.error('Failed to create sandbox environment', error, { sessionId });
             return { success: false, error: error.message };
@@ -257,26 +273,26 @@ save-exact=true
 
     async executeInSandbox(sessionDir, code, packages = []) {
         const config = configManager.get('execution');
-        
+
         try {
             // Install packages if needed
             if (packages && packages.length > 0) {
                 await this.installPackagesSecurely(sessionDir, packages);
             }
-            
-            // Write code to file safely
-            const codeFile = await pathValidator.safeWriteFile(
-                'generated.js',
+
+            // Write code to file safely in the session directory
+            const codeFilePath = path.join(sessionDir, 'generated.js');
+            await fs.writeFile(
+                codeFilePath,
                 code,
-                'temp',
-                { flag: 'w' }
+                { encoding: 'utf8', mode: 0o600 }
             );
-            
+
             // Execute with strict limits
             const result = await this.executeWithLimits(sessionDir, config);
-            
+
             return result;
-            
+
         } catch (error) {
             logger.error('Sandbox execution failed', error, { sessionDir });
             return {
@@ -290,32 +306,50 @@ save-exact=true
 
     async installPackagesSecurely(sessionDir, packages) {
         const config = configManager.get('security');
-        
-        // Filter dangerous packages if blocking is enabled
-        if (config.blockSuspiciousPackages) {
-            const filteredPackages = packages.filter(pkg => {
-                const isDangerous = this.dangerousPackages.some(dangerous => 
-                    pkg.toLowerCase().includes(dangerous.toLowerCase())
-                );
-                
-                if (isDangerous) {
-                    logger.logSecurityEvent('blocked_dangerous_package', { package: pkg });
-                }
-                
-                return !isDangerous;
+
+        // Filter dangerous packages
+        let filteredPackages = packages.filter(pkg => {
+            const isDangerous = this.dangerousPackages.some(dangerous =>
+                pkg.toLowerCase().includes(dangerous.toLowerCase())
+            );
+
+            if (isDangerous) {
+                logger.logSecurityEvent('blocked_dangerous_package', { package: pkg });
+                return false;
+            }
+            return true;
+        });
+
+        // Filter to only allowed packages with pinned versions
+        const allowedPackages = [];
+        const rejectedPackages = [];
+
+        filteredPackages.forEach(pkg => {
+            const packageName = pkg.split('@')[0]; // Handle @version suffix
+            if (this.allowedPackageVersions[packageName]) {
+                allowedPackages.push(packageName);
+            } else {
+                rejectedPackages.push(pkg);
+                logger.logSecurityEvent('blocked_unlisted_package', { package: pkg });
+            }
+        });
+
+        if (rejectedPackages.length > 0) {
+            logger.warn('Some packages were rejected (not in allowlist)', {
+                rejected: rejectedPackages,
+                allowed: Object.keys(this.allowedPackageVersions)
             });
-            
-            packages = filteredPackages;
         }
-        
-        if (packages.length === 0) return;
-        
-        // Update package.json
+
+        if (allowedPackages.length === 0) return;
+
+        // Update package.json with pinned versions only
         const packageJsonPath = path.join(sessionDir, 'package.json');
         const packageJson = JSON.parse(await fs.readFile(packageJsonPath, 'utf8'));
-        
-        packages.forEach(pkg => {
-            packageJson.dependencies[pkg] = 'latest';
+
+        allowedPackages.forEach(pkg => {
+            // Use pinned version from allowlist, never 'latest'
+            packageJson.dependencies[pkg] = this.allowedPackageVersions[pkg];
         });
         
         await fs.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2));
@@ -406,7 +440,7 @@ save-exact=true
 
     async cleanupSandbox(sessionDir) {
         try {
-            await fs.rmdir(sessionDir, { recursive: true });
+            await fs.rm(sessionDir, { recursive: true, force: true });
             logger.info('Sandbox cleaned up', { sessionDir });
         } catch (error) {
             logger.error('Sandbox cleanup failed', error, { sessionDir });

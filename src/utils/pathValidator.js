@@ -45,6 +45,45 @@ class PathValidator {
             throw new Error('Invalid path provided');
         }
 
+        // Check for null bytes FIRST (before any resolution)
+        if (filePath.indexOf('\0') !== -1) {
+            logger.logSecurityEvent('path_traversal_null_byte', {
+                path: filePath,
+                baseType
+            });
+            throw new Error('Path contains null bytes');
+        }
+
+        // Reject absolute paths immediately (they bypass the base directory)
+        // Also check for Windows-style absolute paths (C:\, D:\, etc.)
+        if (path.isAbsolute(filePath) || /^[a-zA-Z]:[\\\/]/.test(filePath)) {
+            logger.logSecurityEvent('path_traversal_absolute', {
+                path: filePath,
+                baseType
+            });
+            throw new Error('Path traversal detected: absolute paths not allowed');
+        }
+
+        // Check for suspicious patterns on ORIGINAL path (before resolution)
+        if (this.containsSuspiciousPatterns(filePath)) {
+            logger.logSecurityEvent('suspicious_path_pattern', {
+                path: filePath,
+                baseType
+            });
+            throw new Error('Suspicious path traversal pattern detected');
+        }
+
+        // Check for Windows reserved names in basename
+        const basename = path.basename(filePath).toLowerCase().split('.')[0];
+        if (/^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i.test(basename)) {
+            logger.logSecurityEvent('suspicious_path_pattern', {
+                path: filePath,
+                reason: 'Windows reserved name',
+                baseType
+            });
+            throw new Error('Suspicious path pattern detected');
+        }
+
         // Get the base directory
         const baseDir = this.safePaths.get(baseType);
         if (!baseDir) {
@@ -55,15 +94,6 @@ class PathValidator {
         const resolvedPath = path.resolve(baseDir, filePath);
         const normalizedPath = path.normalize(resolvedPath);
 
-        // Check for null bytes
-        if (normalizedPath.indexOf('\0') !== -1) {
-            logger.logSecurityEvent('path_traversal_null_byte', {
-                path: filePath,
-                baseType
-            });
-            throw new Error('Path contains null bytes');
-        }
-
         // Check for path traversal attempts
         if (!this.isPathSafe(normalizedPath, baseDir)) {
             logger.logSecurityEvent('path_traversal_attempt', {
@@ -73,15 +103,6 @@ class PathValidator {
                 baseType
             });
             throw new Error('Path traversal detected');
-        }
-
-        // Additional checks for suspicious patterns
-        if (this.containsSuspiciousPatterns(normalizedPath)) {
-            logger.logSecurityEvent('suspicious_path_pattern', {
-                path: normalizedPath,
-                baseType
-            });
-            throw new Error('Suspicious path pattern detected');
         }
 
         return normalizedPath;
@@ -110,11 +131,19 @@ class PathValidator {
             /\.\.[\\/]/,           // Parent directory traversal
             /\.\.$/,               // Ends with parent directory
             /^~/,                  // Home directory expansion
-            /\$\{.*\}/,            // Variable expansion
-            /\$\(.*\)/,            // Command substitution
+            /\$\{.*\}/,            // Variable expansion ${VAR}
+            /\$\(.*\)/,            // Command substitution $(cmd)
+            /`[^`]*`/,             // Backtick command substitution
+            /\$[A-Za-z_]/,         // Variable like $HOME
             /%.*%/,                // Windows variable expansion
             /[\x00-\x1f\x7f]/,     // Control characters
             /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$/i, // Windows reserved names
+            /[;&|]/,               // Shell command separators
+            /^\/\//,               // UNC paths //server/share
+            /^\\\\|^\\\//,         // Windows UNC \\server
+            /[\u2024\u2025\u2026]/, // Unicode dots (one-dot, two-dot, ellipsis)
+            /[\u202e\u202d\u200f\u200e]/, // Unicode direction overrides
+            /[\uff0f\uff3c]/,      // Fullwidth solidus and backslash
         ];
 
         return suspiciousPatterns.some(pattern => pattern.test(pathStr));
@@ -255,8 +284,13 @@ class PathValidator {
      * Safe directory deletion
      */
     async safeDeleteDirectory(dirPath, baseType = 'project') {
+        // Check for empty path (which would be the base directory)
+        if (!dirPath || dirPath === '' || dirPath === '.' || dirPath === './') {
+            throw new Error('Cannot delete base directory');
+        }
+
         const safePath = this.validatePath(dirPath, baseType);
-        
+
         // Prevent deletion of base directories
         for (const [, basePath] of this.safePaths) {
             if (safePath === basePath) {
@@ -265,7 +299,7 @@ class PathValidator {
         }
         
         try {
-            await fs.rmdir(safePath, { recursive: true });
+            await fs.rm(safePath, { recursive: true, force: true });
             
             logger.debug('Directory deleted safely', {
                 path: safePath,

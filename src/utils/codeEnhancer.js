@@ -110,12 +110,12 @@ class CodeEnhancer {
      */
     addErrorHandling(code) {
         // Add try-catch blocks around potentially dangerous operations
+        // Note: localStorage/sessionStorage removed - code using them should be rejected upstream
+        // The simple regex patterns can't handle nested parentheses properly
         const dangerousPatterns = [
-            /document\.querySelector\([^)]+\)/g,
-            /document\.getElementById\([^)]+\)/g,
-            /JSON\.parse\([^)]+\)/g,
-            /localStorage\.[^(]+\([^)]*\)/g,
-            /sessionStorage\.[^(]+\([^)]*\)/g
+            /document\.querySelector\(['"][^'"]+['"]\)/g,
+            /document\.getElementById\(['"][^'"]+['"]\)/g,
+            /JSON\.parse\([^)]+\)/g
         ];
 
         let enhancedCode = code;

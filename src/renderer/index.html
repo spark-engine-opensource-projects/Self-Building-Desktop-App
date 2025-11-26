@@ -3,7 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https://api.anthropic.com; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self';">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' https://api.anthropic.com; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'; worker-src 'none'; manifest-src 'self'; media-src 'none';">
+    <meta http-equiv="X-Content-Type-Options" content="nosniff">
+    <meta name="referrer" content="no-referrer">
     <title>AI Dynamic Application Builder</title>
     <link rel="stylesheet" href="styles.css">
 </head>
@@ -44,17 +46,59 @@
             </div>
         </section>
 
+        <!-- Live Database Preview Sidebar -->
+        <aside id="dbContextSidebar" class="db-context-sidebar" style="display: none;">
+            <div class="sidebar-header">
+                <h3>📊 Database Context</h3>
+                <button id="closeSidebar" class="close-btn">✕</button>
+            </div>
+            <div class="sidebar-content">
+                <div class="db-info">
+                    <strong>Current Database:</strong>
+                    <span id="currentDbName">None</span>
+                </div>
+                <div class="tables-preview">
+                    <h4>Available Tables:</h4>
+                    <div id="tablesPreviewList">
+                        <p class="no-data">No tables yet. Create one in your code!</p>
+                    </div>
+                </div>
+                <button id="refreshDbContext" class="btn btn-sm" style="width: 100%; margin-top: 10px;">
+                    🔄 Refresh
+                </button>
+            </div>
+        </aside>
+
+        <!-- Toggle DB Context Button -->
+        <button id="toggleDbContext" class="floating-btn" title="Show Database Context">
+            🗄️
+        </button>
+
         <!-- Code Generation -->
         <section class="code-generation" id="codeGeneration" style="display: none;">
             <h2>💡 Describe Your Application</h2>
+
+            <!-- Quick Start Templates -->
+            <div class="quick-templates" style="margin-bottom: 15px;">
+                <h3 style="font-size: 14px; margin-bottom: 8px; color: #64748b;">⚡ Quick Start Templates:</h3>
+                <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                    <button class="template-btn" data-template="todo">📝 Todo List</button>
+                    <button class="template-btn" data-template="notes">📔 Note Taking</button>
+                    <button class="template-btn" data-template="contacts">👥 Contacts</button>
+                    <button class="template-btn" data-template="expenses">💰 Expense Tracker</button>
+                    <button class="template-btn" data-template="inventory">📦 Inventory</button>
+                    <button class="template-btn" data-template="diary">📖 Diary/Journal</button>
+                </div>
+            </div>
+
             <div class="input-group">
-                <textarea id="promptInput" placeholder="Describe what you want to build... 
+                <textarea id="promptInput" placeholder="Describe what you want to build...
 
 Examples:
-• Create a simple web server that serves Hello World
-• Build a function that calculates fibonacci numbers
-• Make a script that fetches weather data from an API
-• Create a data visualization using Chart.js"></textarea>
+• Create a todo list app with add, complete, and delete functionality
+• Build a note-taking app with categories and search
+• Make a contact manager with phone and email fields
+• Create an expense tracker with charts and categories"></textarea>
                 <button id="generateBtn" class="btn btn-primary">
                     <span class="btn-text">Generate Code</span>
                     <div class="spinner" style="display: none;"></div>
@@ -114,6 +158,47 @@ Examples:
                 <div class="section-actions">
                     <button id="showDbManagerBtn" class="btn btn-primary">Database Manager</button>
                     <button id="showSchemaGeneratorBtn" class="btn btn-secondary">AI Schema Generator</button>
+                    <button id="showVisualDesignerBtn" class="btn btn-secondary">Visual Designer</button>
+                </div>
+            </div>
+
+            <!-- Visual Schema Designer -->
+            <div id="visualSchemaDesigner" class="subsection" style="display: none;">
+                <h3>🎨 Visual Schema Designer</h3>
+                <div class="designer-container">
+                    <div class="designer-form">
+                        <div class="form-group">
+                            <label>Table Name:</label>
+                            <input type="text" id="designerTableName" placeholder="e.g., users, products, orders">
+                        </div>
+
+                        <div class="columns-designer">
+                            <h4>Columns:</h4>
+                            <div id="columnsContainer"></div>
+                            <button id="addColumnBtn" class="btn btn-outline" style="width: 100%; margin-top: 10px;">
+                                ➕ Add Column
+                            </button>
+                        </div>
+
+                        <div class="designer-actions" style="margin-top: 20px;">
+                            <button id="generateSchemaCodeBtn" class="btn btn-primary">
+                                Generate Table Code
+                            </button>
+                            <button id="createTableFromDesignBtn" class="btn btn-success">
+                                Create Table Now
+                            </button>
+                            <button id="clearDesignerBtn" class="btn btn-outline">
+                                Clear
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="designer-preview">
+                        <h4>Preview:</h4>
+                        <div id="schemaPreview" class="schema-preview-box">
+                            <p class="no-data">Add columns to see preview</p>
+                        </div>
+                    </div>
                 </div>
             </div>
 

@@ -27,6 +27,26 @@ class PerformanceMonitor {
             cpuThreshold: 80, // 80%
             eventLoopThreshold: 100 // 100ms
         };
+
+        // Register cleanup handlers to prevent memory leaks
+        this.boundCleanup = this.cleanup.bind(this);
+        process.on('exit', this.boundCleanup);
+        process.on('SIGINT', this.boundCleanup);
+        process.on('SIGTERM', this.boundCleanup);
+    }
+
+    /**
+     * Cleanup all resources - prevents memory leaks
+     */
+    cleanup() {
+        this.stop();
+        // Remove event listeners to prevent duplicate handlers
+        process.removeListener('exit', this.boundCleanup);
+        process.removeListener('SIGINT', this.boundCleanup);
+        process.removeListener('SIGTERM', this.boundCleanup);
+        // Clear performance entries to free memory
+        performance.clearMarks();
+        performance.clearMeasures();
     }
 
     /**

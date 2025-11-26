@@ -144,6 +144,19 @@ class SessionManager {
         return updatedSession;
     }
 
+    /**
+     * Truncate string to max length with indicator
+     */
+    truncateOutput(str, maxLength = 10000) {
+        if (!str || typeof str !== 'string') {
+            return str;
+        }
+        if (str.length <= maxLength) {
+            return str;
+        }
+        return str.substring(0, maxLength) + '\n... [truncated - output exceeded ' + maxLength + ' characters]';
+    }
+
     addExecution(sessionId, executionResult) {
         const session = this.sessions.get(sessionId);
         if (!session) {
@@ -151,16 +164,24 @@ class SessionManager {
             return null;
         }
 
+        // Limit output size to prevent memory issues
+        const MAX_OUTPUT_SIZE = 10000; // 10KB limit per execution output
+        const MAX_ERROR_SIZE = 5000;   // 5KB limit per error output
+
         const execution = {
             timestamp: new Date().toISOString(),
             success: executionResult.success,
-            output: executionResult.output,
-            errors: executionResult.errors,
-            duration: executionResult.duration || 0
+            output: this.truncateOutput(executionResult.output, MAX_OUTPUT_SIZE),
+            errors: this.truncateOutput(executionResult.errors, MAX_ERROR_SIZE),
+            duration: executionResult.duration || 0,
+            truncated: {
+                output: executionResult.output && executionResult.output.length > MAX_OUTPUT_SIZE,
+                errors: executionResult.errors && executionResult.errors.length > MAX_ERROR_SIZE
+            }
         };
 
         const executionHistory = [...(session.executionHistory || []), execution];
-        
+
         // Keep only last 10 executions per session
         if (executionHistory.length > 10) {
             executionHistory.splice(0, executionHistory.length - 10);
@@ -181,13 +202,15 @@ class SessionManager {
 
         this.sessions.set(sessionId, updatedSession);
         this.saveSessionHistory();
-        
-        logger.info('Execution added to session', { 
-            sessionId, 
+
+        logger.info('Execution added to session', {
+            sessionId,
             success: executionResult.success,
-            totalExecutions: updatedSession.metadata.totalExecutions
+            totalExecutions: updatedSession.metadata.totalExecutions,
+            outputTruncated: execution.truncated.output,
+            errorsTruncated: execution.truncated.errors
         });
-        
+
         return updatedSession;
     }
 
@@ -277,25 +300,113 @@ class SessionManager {
         };
     }
 
+    /**
+     * Validate session object structure
+     */
+    validateSessionStructure(session) {
+        // Required fields
+        if (!session || typeof session !== 'object') {
+            return { valid: false, error: 'Session must be an object' };
+        }
+
+        if (!session.id || typeof session.id !== 'string') {
+            return { valid: false, error: 'Session must have a valid string id' };
+        }
+
+        // Validate id format (should be alphanumeric with dashes/underscores)
+        if (!/^[a-zA-Z0-9_-]+$/.test(session.id)) {
+            return { valid: false, error: 'Session id contains invalid characters' };
+        }
+
+        // Check for required metadata structure
+        if (session.metadata && typeof session.metadata !== 'object') {
+            return { valid: false, error: 'Session metadata must be an object' };
+        }
+
+        // Validate execution history if present
+        if (session.executionHistory) {
+            if (!Array.isArray(session.executionHistory)) {
+                return { valid: false, error: 'Execution history must be an array' };
+            }
+            // Limit execution history size on import
+            if (session.executionHistory.length > 100) {
+                session.executionHistory = session.executionHistory.slice(-100);
+            }
+        }
+
+        // Sanitize potentially dangerous fields
+        if (session.prompt && typeof session.prompt === 'string' && session.prompt.length > 50000) {
+            session.prompt = session.prompt.substring(0, 50000);
+        }
+
+        if (session.generatedCode && typeof session.generatedCode === 'string' && session.generatedCode.length > 500000) {
+            session.generatedCode = session.generatedCode.substring(0, 500000);
+        }
+
+        return { valid: true };
+    }
+
     async importSessions(data) {
         try {
+            if (!data || typeof data !== 'object') {
+                throw new Error('Invalid import data: must be an object');
+            }
+
             if (!data.sessions || !Array.isArray(data.sessions)) {
-                throw new Error('Invalid session data format');
+                throw new Error('Invalid session data format: sessions must be an array');
+            }
+
+            // Limit number of sessions that can be imported at once
+            const MAX_IMPORT_SESSIONS = 1000;
+            if (data.sessions.length > MAX_IMPORT_SESSIONS) {
+                throw new Error(`Cannot import more than ${MAX_IMPORT_SESSIONS} sessions at once`);
             }
 
             let importedCount = 0;
+            let skippedCount = 0;
+            const errors = [];
+
             for (const session of data.sessions) {
-                if (session.id && !this.sessions.has(session.id)) {
-                    this.sessions.set(session.id, session);
-                    importedCount++;
+                // Validate session structure
+                const validation = this.validateSessionStructure(session);
+                if (!validation.valid) {
+                    skippedCount++;
+                    errors.push({ sessionId: session?.id, error: validation.error });
+                    continue;
                 }
+
+                // Don't overwrite existing sessions
+                if (this.sessions.has(session.id)) {
+                    skippedCount++;
+                    continue;
+                }
+
+                // Ensure metadata has required fields
+                const sanitizedSession = {
+                    ...session,
+                    metadata: {
+                        totalExecutions: 0,
+                        successfulExecutions: 0,
+                        codeLength: 0,
+                        ...session.metadata
+                    },
+                    importedAt: new Date().toISOString()
+                };
+
+                this.sessions.set(session.id, sanitizedSession);
+                importedCount++;
             }
 
             await this.saveSessionHistory();
-            logger.info('Sessions imported', { importedCount });
-            
-            return { success: true, importedCount };
-            
+            logger.info('Sessions imported', { importedCount, skippedCount, errorCount: errors.length });
+
+            return {
+                success: true,
+                importedCount,
+                skippedCount,
+                errors: errors.length > 0 ? errors.slice(0, 10) : undefined // Limit error reporting
+            };
+
         } catch (error) {
             logger.error('Failed to import sessions', error);
             return { success: false, error: error.message };

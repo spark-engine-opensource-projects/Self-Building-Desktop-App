@@ -1,6 +1,10 @@
+const fs = require('fs').promises;
+const path = require('path');
+
 /**
  * Rate Limiter for API calls and resource protection
  * Implements token bucket and sliding window algorithms
+ * Includes file-based persistence for state recovery across restarts
  */
 class RateLimiter {
     constructor(options = {}) {
@@ -12,16 +16,111 @@ class RateLimiter {
             onLimitReached: options.onLimitReached || this.defaultLimitHandler,
             skipSuccessfulRequests: options.skipSuccessfulRequests || false,
             skipFailedRequests: options.skipFailedRequests || false,
+            persistState: options.persistState !== false, // Enable persistence by default
+            persistPath: options.persistPath || path.join(__dirname, '..', '..', 'data', 'rate-limiter-state.json'),
+            persistInterval: options.persistInterval || 30000, // Save every 30 seconds
             ...options
         };
-        
+
         this.requests = new Map(); // Store request history per key
         this.buckets = new Map(); // For token bucket algorithm
-        
+        this.initialized = false;
+
         // Start cleanup timer
-        setInterval(() => {
+        this.cleanupInterval = setInterval(() => {
             this.cleanup();
         }, this.options.windowMs);
+
+        // Start persistence timer if enabled
+        if (this.options.persistState) {
+            this.loadState().catch(err => {
+                // Ignore load errors on startup (file may not exist)
+            });
+            this.persistInterval = setInterval(() => {
+                this.saveState().catch(err => {
+                    console.error('Failed to persist rate limiter state:', err.message);
+                });
+            }, this.options.persistInterval);
+        }
+    }
+
+    /**
+     * Save rate limiter state to disk
+     */
+    async saveState() {
+        if (!this.options.persistState) return;
+
+        try {
+            const state = {
+                timestamp: Date.now(),
+                algorithm: this.options.algorithm,
+                requests: Array.from(this.requests.entries()),
+                buckets: Array.from(this.buckets.entries())
+            };
+
+            // Ensure directory exists
+            const dir = path.dirname(this.options.persistPath);
+            await fs.mkdir(dir, { recursive: true });
+
+            await fs.writeFile(
+                this.options.persistPath,
+                JSON.stringify(state, null, 2),
+                'utf8'
+            );
+        } catch (error) {
+            // Log but don't throw - persistence failure shouldn't break rate limiting
+            console.error('Rate limiter state persistence failed:', error.message);
+        }
+    }
+
+    /**
+     * Load rate limiter state from disk
+     */
+    async loadState() {
+        if (!this.options.persistState) return;
+
+        try {
+            const data = await fs.readFile(this.options.persistPath, 'utf8');
+            const state = JSON.parse(data);
+
+            // Only restore if state is recent (within 2x window time)
+            const maxAge = this.options.windowMs * 2;
+            if (Date.now() - state.timestamp > maxAge) {
+                // State too old, discard
+                return;
+            }
+
+            // Restore state
+            if (state.requests) {
+                this.requests = new Map(state.requests);
+            }
+            if (state.buckets) {
+                this.buckets = new Map(state.buckets);
+            }
+
+            // Clean up any expired entries immediately
+            this.cleanup();
+            this.initialized = true;
+        } catch (error) {
+            // File doesn't exist or is corrupted - start fresh
+            this.initialized = true;
+        }
+    }
+
+    /**
+     * Cleanup intervals on shutdown
+     */
+    destroy() {
+        if (this.cleanupInterval) {
+            clearInterval(this.cleanupInterval);
+        }
+        if (this.persistInterval) {
+            clearInterval(this.persistInterval);
+        }
+        // Final save before shutdown
+        if (this.options.persistState) {
+            this.saveState().catch(() => {});
+        }
     }
 
     /**
@@ -405,7 +504,7 @@ class RateLimiter {
      * Generate unique request ID
      */
     generateRequestId() {
-        return Date.now().toString(36) + Math.random().toString(36).substr(2);
+        return Date.now().toString(36) + Math.random().toString(36).substring(2);
     }
 
     /**

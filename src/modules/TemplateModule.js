@@ -1033,7 +1033,7 @@ README.md
             
             // Remove from filesystem
             const templatePath = path.join(this.userTemplatesPath, id);
-            await fs.rmdir(templatePath, { recursive: true });
+            await fs.rm(templatePath, { recursive: true, force: true });
             
             // Remove from memory
             this.templates.delete(id);

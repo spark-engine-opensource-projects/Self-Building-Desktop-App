@@ -77,21 +77,22 @@ describe('CircuitBreakerManager', () => {
         .mockRejectedValueOnce(new Error('fail'))
         .mockRejectedValueOnce(new Error('fail'))
         .mockResolvedValue('success');
-      
+
       const breaker = circuitBreakerManager.getBreaker('test-service', {
         failureThreshold: 2,
+        successThreshold: 1, // Close after 1 success in HALF_OPEN
         resetTimeout: 50 // 50ms reset timeout
       });
-      
+
       // Cause circuit to open
       try { await breaker.execute(mockFn); } catch (e) {}
       try { await breaker.execute(mockFn); } catch (e) {}
-      
+
       expect(breaker.getState()).toBe('OPEN');
-      
+
       // Wait for reset timeout
       await new Promise(resolve => setTimeout(resolve, 60));
-      
+
       // Next call should attempt recovery
       const result = await breaker.execute(mockFn);
       expect(result).toBe('success');

@@ -178,4 +178,8 @@ class ConfigManager {
     }
 }
 
-module.exports = new ConfigManager();
+// Export both instance and class for testability
+const instance = new ConfigManager();
+module.exports = instance;
+module.exports.ConfigManager = ConfigManager;
+module.exports.getInstance = () => instance;

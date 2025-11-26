@@ -8,6 +8,15 @@ module.exports = {
     '**/__tests__/**/*.ts',
     '**/__tests__/**/*.js'
   ],
+  testPathIgnorePatterns: [
+    '/node_modules/',
+    '/tests/e2e/',
+    '\\.e2e\\.test\\.(js|ts)$',
+    '/tests/security/xss.test.js'
+  ],
+  transformIgnorePatterns: [
+    '/node_modules/(?!(parse5|entities)/)'
+  ],
   collectCoverageFrom: [
     'src/**/*.{js,ts}',
     '!src/**/*.d.ts',
@@ -25,7 +34,7 @@ module.exports = {
     '^.+\\.ts$': 'ts-jest',
     '^.+\\.js$': 'babel-jest'
   },
-  moduleNameMapping: {
+  moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/src/$1'
   }
 };

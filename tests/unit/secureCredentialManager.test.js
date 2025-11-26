@@ -1,23 +1,88 @@
+// Mock electron before requiring the module
+jest.mock('electron', () => ({
+    safeStorage: {
+        isEncryptionAvailable: jest.fn().mockReturnValue(true),
+        encryptString: jest.fn((str) => Buffer.from(`encrypted:${str}`)),
+        decryptString: jest.fn((buffer) => buffer.toString().replace('encrypted:', ''))
+    },
+    app: {
+        getPath: jest.fn().mockReturnValue('/tmp/test-secure-storage')
+    }
+}));
+
+// Mock secure storage with a shared store
+const mockSecureStore = new Map();
+jest.mock('../../src/utils/secureStorage', () => ({
+    initialize: jest.fn().mockResolvedValue(true),
+    set: jest.fn((key, value) => {
+        mockSecureStore.set(key, value);
+        return Promise.resolve();
+    }),
+    get: jest.fn((key) => Promise.resolve(mockSecureStore.get(key))),
+    has: jest.fn((key) => Promise.resolve(mockSecureStore.has(key))),
+    delete: jest.fn((key) => {
+        mockSecureStore.delete(key);
+        return Promise.resolve();
+    }),
+    clear: jest.fn(() => {
+        mockSecureStore.clear();
+        return Promise.resolve();
+    }),
+    keys: jest.fn(() => Promise.resolve(Array.from(mockSecureStore.keys()))),
+    isAvailable: true
+}));
+
+// Mock encryption module
+jest.mock('../../src/modules/EncryptionModule', () => {
+    return jest.fn().mockImplementation(() => ({
+        initialize: jest.fn().mockResolvedValue(true),
+        encrypt: jest.fn((data) => Promise.resolve({
+            encrypted: Buffer.from(`enc:${data}`),
+            iv: Buffer.from('test-iv-123456'),
+            authTag: Buffer.from('test-auth-tag')
+        })),
+        decrypt: jest.fn((data) => {
+            const decrypted = Buffer.from(data.encrypted, 'base64').toString().replace('enc:', '');
+            return Promise.resolve(decrypted);
+        }),
+        rotateKeys: jest.fn().mockResolvedValue(true)
+    }));
+});
+
+// Mock logger
+jest.mock('../../src/utils/logger', () => global.testUtils?.createMockLogger?.() || {
+    info: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+    debug: jest.fn()
+});
+
 const credentialManager = require('../../src/utils/secureCredentialManager');
 
 describe('Secure Credential Manager', () => {
     let mockAuditModule;
 
     beforeEach(async () => {
+        // Clear the mock store
+        mockSecureStore.clear();
+
         mockAuditModule = {
             logSecurityEvent: jest.fn().mockResolvedValue(undefined)
         };
 
-        // Reset the credential manager
-        if (credentialManager.initialized) {
-            await credentialManager.clearAllCredentials();
-        }
+        // Reset the credential manager state
+        credentialManager.initialized = false;
 
         await credentialManager.initialize(mockAuditModule);
     });
 
     afterEach(async () => {
-        await credentialManager.clearAllCredentials();
+        // Only clear if initialized
+        if (credentialManager.initialized) {
+            await credentialManager.clearAllCredentials();
+        }
+        // Reset initialized state for clean test slate
+        credentialManager.initialized = false;
     });
 
     describe('Initialization', () => {

@@ -22,11 +22,15 @@ class SQLValidator {
 
         // Patterns that might indicate SQL injection
         this.suspiciousPatterns = [
-            /(\-\-|\/\*|\*\/|xp_|sp_|0x)/gi,  // Comments and hex
-            /(\bunion\b.*\bselect\b)/gi,        // Union attacks
-            /(\bor\b\s*\d+\s*=\s*\d+)/gi,       // OR 1=1 attacks
-            /(;\s*(drop|delete|insert|update)\s)/gi, // Multiple statements
-            /(\binto\s+(outfile|dumpfile)\b)/gi, // File operations
+            /(\-\-)/g,                             // SQL comments (--)
+            /(\/\*|\*\/)/g,                        // Block comments
+            /(xp_|sp_)/gi,                         // SQL Server procedures
+            /0x[0-9a-fA-F]+/g,                     // Hex values
+            /(\bunion\b.*\bselect\b)/gi,           // Union attacks
+            /(\bor\b\s*['"]?\d+['"]?\s*=\s*['"]?\d+['"]?)/gi, // OR 1=1 attacks (with quotes)
+            /(\bor\b\s*['"][^'"]*['"]\s*=\s*['"][^'"]*['"])/gi, // OR 'x'='x' attacks
+            /(;\s*\w)/gi,                          // Multiple statements (semicolon followed by any word)
+            /(\binto\s+(outfile|dumpfile)\b)/gi,   // File operations
         ];
     }
 
@@ -39,15 +43,18 @@ class SQLValidator {
         }
 
         const upperSQL = sql.toUpperCase().trim();
-        
-        // Check if operation is allowed
-        const operation = this.getOperation(upperSQL);
-        if (!this.isOperationAllowed(operation)) {
-            logger.logSecurityEvent('blocked_sql_operation', {
-                operation,
-                query: sql.substring(0, 100)
-            });
-            throw new Error(`SQL operation '${operation}' is not allowed`);
+
+        // Check for suspicious patterns FIRST (SQL injection detection)
+        for (const pattern of this.suspiciousPatterns) {
+            // Reset regex lastIndex to ensure consistent matching
+            pattern.lastIndex = 0;
+            if (pattern.test(sql)) {
+                logger.logSecurityEvent('suspicious_sql_pattern', {
+                    pattern: pattern.toString(),
+                    query: sql.substring(0, 100)
+                });
+                throw new Error('Suspicious SQL pattern detected');
+            }
         }
 
         // Check for dangerous keywords
@@ -61,15 +68,14 @@ class SQLValidator {
             }
         }
 
-        // Check for suspicious patterns
-        for (const pattern of this.suspiciousPatterns) {
-            if (pattern.test(sql)) {
-                logger.logSecurityEvent('suspicious_sql_pattern', {
-                    pattern: pattern.toString(),
-                    query: sql.substring(0, 100)
-                });
-                throw new Error('Suspicious SQL pattern detected');
-            }
+        // Check if operation is allowed
+        const operation = this.getOperation(upperSQL);
+        if (!this.isOperationAllowed(operation)) {
+            logger.logSecurityEvent('blocked_sql_operation', {
+                operation,
+                query: sql.substring(0, 100)
+            });
+            throw new Error(`SQL operation '${operation}' is not allowed`);
         }
 
         // Validate parameter count matches placeholders
@@ -82,8 +88,15 @@ class SQLValidator {
      * Get SQL operation from query
      */
     getOperation(sql) {
-        const match = sql.match(/^\s*(\w+(?:\s+\w+)?)/);
-        return match ? match[1] : 'UNKNOWN';
+        // First try to match two-word operations (CREATE TABLE, DROP TABLE, etc.)
+        const twoWordMatch = sql.match(/^\s*(CREATE\s+TABLE|DROP\s+TABLE|ALTER\s+TABLE|CREATE\s+INDEX|DROP\s+INDEX)/i);
+        if (twoWordMatch) {
+            return twoWordMatch[1].toUpperCase().replace(/\s+/, ' ');
+        }
+
+        // Otherwise match single-word operations (SELECT, INSERT, UPDATE, DELETE)
+        const singleWordMatch = sql.match(/^\s*(\w+)/);
+        return singleWordMatch ? singleWordMatch[1].toUpperCase() : 'UNKNOWN';
     }
 
     /**

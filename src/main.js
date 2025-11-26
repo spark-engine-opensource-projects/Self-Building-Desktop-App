@@ -1,11 +1,10 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs').promises;
-const { exec, spawn } = require('child_process');
-const { promisify } = require('util');
 const Anthropic = require('@anthropic-ai/sdk');
 const fetch = require('node-fetch');
 const { v4: uuidv4 } = require('uuid');
+const crypto = require('crypto');
 const logger = require('./utils/logger');
 const systemMonitor = require('./utils/systemMonitor');
 const configManager = require('./utils/configManager');
@@ -17,32 +16,88 @@ const jsonParser = require('./utils/jsonParser');
 const errorRecovery = require('./utils/errorRecovery');
 const cacheManager = require('./utils/cacheManager');
 const ipcValidator = require('./utils/ipcValidator');
-const CircuitBreaker = require('./utils/circuitBreaker');
+const ipcSecurityMiddleware = require('./utils/ipcSecurityMiddleware');
 const secureStorage = require('./utils/secureStorage');
-const envConfig = require('./utils/envConfig');
 const performanceMonitor = require('./utils/performanceMonitor');
-const requestInterceptor = require('./utils/requestInterceptor');
-const scheduler = require('./utils/scheduler');
 const DatabaseManager = require('./utils/databaseManager');
 const AISchemaGenerator = require('./utils/aiSchemaGenerator');
 const { autoUpdater } = require('electron-updater');
 const { RateLimiter } = require('./utils/rateLimiter');
-const crypto = require('crypto');
 const PerformanceDashboard = require('./modules/PerformanceDashboard');
 const CodeGenerationModule = require('./modules/CodeGenerationModule');
 const CodeExecutionModule = require('./modules/CodeExecutionModule');
+const requestDeduplicator = require('./utils/requestDeduplicator');
+const CONSTANTS = require('./config/constants');
 
-const execAsync = promisify(exec);
+/**
+ * @typedef {Object} ExecutionConfig
+ * @property {number} maxConcurrentExecutions - Maximum concurrent code executions
+ * @property {number} executionTimeout - Timeout in milliseconds for code execution
+ * @property {number} maxMemoryMB - Maximum memory limit in MB
+ * @property {number} maxOutputSize - Maximum output size in bytes
+ */
 
+/**
+ * @typedef {Object} GenerationResult
+ * @property {boolean} success - Whether generation succeeded
+ * @property {Object} [data] - Generated code data
+ * @property {string} [error] - Error message if failed
+ */
+
+/**
+ * @typedef {Object} ExecutionResult
+ * @property {boolean} success - Whether execution succeeded
+ * @property {string} [output] - Execution output
+ * @property {string} [error] - Error message if failed
+ * @property {number} [duration] - Execution duration in ms
+ */
+
+/**
+ * Main application class for the AI Dynamic Application Builder
+ *
+ * RESPONSIBILITIES (organized by concern):
+ *
+ * 1. WINDOW MANAGEMENT
+ *    - createWindow(): Create and configure main Electron window
+ *    - setupAutoUpdater(): Configure auto-update functionality
+ *
+ * 2. IPC COMMUNICATION
+ *    - setupIPC(): Register all IPC handlers
+ *    - Note: Consider using src/handlers/ipcHandlers.js for new handlers
+ *
+ * 3. AI CODE GENERATION
+ *    - generateCode(): Main entry point for AI code generation
+ *    - attemptCodeGeneration(): Core generation logic with Anthropic API
+ *    - handleGenerationError(): Error recovery and retry logic
+ *
+ * 4. CODE EXECUTION
+ *    - executeCode(): Execute generated code in sandbox
+ *    - executeDOMCode(): Execute DOM-related code
+ *    - detectAndAutoCreateTables(): Auto-create database tables
+ *
+ * 5. SESSION MANAGEMENT
+ *    - activeSessions: Map of active execution sessions
+ *    - cleanupSession(): Clean up session resources
+ *
+ * 6. DATABASE OPERATIONS
+ *    - databaseManager: Handles all database operations
+ *    - buildDatabaseContext(): Build context for AI prompts
+ *
+ * @class
+ * @see src/handlers/ipcHandlers.js - Extracted IPC handlers for reuse
+ * @see src/modules/CodeGenerationModule.js - Code generation utilities
+ * @see src/modules/CodeExecutionModule.js - Code execution utilities
+ */
 class DynamicAppBuilder {
+    /**
+     * Create a new DynamicAppBuilder instance
+     * @constructor
+     */
     constructor() {
         this.mainWindow = null;
         this.anthropic = null;
-        this.tempDir = path.join(__dirname, '..', 'temp');
-        this.allowedPackages = [
-            'lodash', 'axios', 'chart.js', 'moment', 'uuid',
-            'express', 'cors', 'body-parser', 'helmet'
-        ];
+        this.tempDir = path.join(__dirname, '..', CONSTANTS.FILESYSTEM.TEMP_DIR_NAME);
+        this.allowedPackages = CONSTANTS.ALLOWED_PACKAGES;
         this.activeSessions = new Map();
         this.databaseManager = new DatabaseManager();
         this.aiSchemaGenerator = null;
@@ -50,42 +105,85 @@ class DynamicAppBuilder {
         this.codeGenerationModule = null;
         this.codeExecutionModule = null;
         this.apiKeyRateLimiter = new RateLimiter({
-            maxRequests: 5,
-            windowMs: 60000, // 1 minute
+            maxRequests: CONSTANTS.RATE_LIMITS.API_KEY_VALIDATION.MAX_REQUESTS,
+            windowMs: CONSTANTS.RATE_LIMITS.API_KEY_VALIDATION.WINDOW_MS,
             algorithm: 'sliding_window'
         });
         this.config = {
-            maxConcurrentExecutions: 3,
-            executionTimeout: 30000,
-            maxMemoryMB: 512,
-            maxOutputSize: 1048576 // 1MB
+            maxConcurrentExecutions: CONSTANTS.EXECUTION.MAX_CONCURRENT,
+            executionTimeout: CONSTANTS.EXECUTION.TIMEOUT_MS,
+            maxMemoryMB: CONSTANTS.EXECUTION.MAX_MEMORY_MB,
+            maxOutputSize: CONSTANTS.EXECUTION.MAX_OUTPUT_SIZE_BYTES
         };
     }
 
+    /**
+     * Initialize the application and all required services
+     * @async
+     * @returns {Promise<void>}
+     */
     async initialize() {
         logger.info('Initializing Dynamic App Builder');
-        
+
         // Initialize configuration
         await configManager.initialize();
-        
+
         // Initialize enhanced configuration
         await enhancedConfigManager.initialize();
 
         // Initialize session manager
         await sessionManager.initialize();
-        
+
+        // Initialize secure storage for API keys
+        await secureStorage.initialize();
+
+        // Initialize database manager
+        await this.databaseManager.initialize();
+
+        // Try to restore API key from secure storage
+        await this.restoreApiKeyFromSecureStorage();
+
         // Update config from loaded settings
         const execConfig = configManager.get('execution');
         this.config = { ...this.config, ...execConfig };
-        
+
         await this.ensureTempDir();
         await systemMonitor.startMonitoring(configManager.get('monitoring', 'healthCheckInterval'));
         this.setupIPC();
         this.setupAutoUpdater();
-        
+
         logger.info('Dynamic App Builder initialized successfully', { config: this.config });
     }
 
+    async restoreApiKeyFromSecureStorage() {
+        try {
+            if (await secureStorage.hasApiKey()) {
+                const storedApiKey = await secureStorage.getApiKey();
+                if (storedApiKey) {
+                    // Initialize Anthropic client with stored key
+                    this.anthropic = new Anthropic({
+                        apiKey: storedApiKey,
+                        fetch: fetch,
+                        timeout: 30000,
+                        maxRetries: 0
+                    });
+                    this.aiSchemaGenerator = new AISchemaGenerator(this.anthropic);
+                    this.codeGenerationModule = new CodeGenerationModule(this.anthropic);
+                    this.codeExecutionModule = new CodeExecutionModule(this.config);
+                    logger.info('API key restored from secure storage');
+                }
+            }
+        } catch (error) {
+            logger.warn('Failed to restore API key from secure storage', { error: error.message });
+        }
+    }
+
+    /**
+     * Ensure the temporary directory exists
+     * @async
+     * @returns {Promise<void>}
+     * @private
+     */
     async ensureTempDir() {
         try {
             await fs.access(this.tempDir);
@@ -94,23 +192,74 @@ class DynamicAppBuilder {
         }
     }
 
+    /**
+     * Get the application icon path, checking multiple formats
+     * @returns {string|null} Path to icon or null if not found
+     */
+    getIconPath() {
+        const assetsDir = path.join(__dirname, '..', 'assets');
+        const iconFormats = ['icon.png', 'icon.ico', 'icon.svg', 'icon.icns'];
+
+        for (const iconFile of iconFormats) {
+            const iconPath = path.join(assetsDir, iconFile);
+            try {
+                require('fs').accessSync(iconPath);
+                return iconPath;
+            } catch {
+                // Icon not found, try next format
+            }
+        }
+
+        logger.warn('No application icon found in assets directory');
+        return null;
+    }
+
+    /**
+     * Create and configure the main application window
+     * @returns {void}
+     */
     createWindow() {
-        this.mainWindow = new BrowserWindow({
-            width: 1200,
-            height: 800,
+        // Determine icon path with fallback
+        const iconPath = this.getIconPath();
+
+        const windowOptions = {
+            width: CONSTANTS.WINDOW.DEFAULT_WIDTH,
+            height: CONSTANTS.WINDOW.DEFAULT_HEIGHT,
+            minWidth: CONSTANTS.WINDOW.MIN_WIDTH,
+            minHeight: CONSTANTS.WINDOW.MIN_HEIGHT,
             webPreferences: {
                 nodeIntegration: false,
                 contextIsolation: true,
                 preload: path.join(__dirname, 'preload.js'),
-                sandbox: false, // Disabled temporarily to allow ES6 in loaded scripts
+                sandbox: true, // Enabled for security - renderer cannot access Node.js APIs
                 webSecurity: true, // Enforce web security
                 allowRunningInsecureContent: false, // Block insecure content
                 experimentalFeatures: false // Disable experimental features
-            },
-            icon: path.join(__dirname, '..', 'assets', 'icon.png')
-        });
+            }
+        };
+
+        // Only set icon if it exists
+        if (iconPath) {
+            windowOptions.icon = iconPath;
+        }
+
+        this.mainWindow = new BrowserWindow(windowOptions);
 
         this.mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+
+        // Register this window as a valid IPC sender for CSRF protection
+        this.mainWindow.webContents.on('did-finish-load', () => {
+            const senderId = this.mainWindow.webContents.id;
+            ipcSecurityMiddleware.registerSender(senderId);
+            logger.info('Window registered for IPC security', { senderId });
+        });
+
+        // Unregister on close
+        this.mainWindow.on('closed', () => {
+            if (this.mainWindow && this.mainWindow.webContents) {
+                ipcSecurityMiddleware.unregisterSender(this.mainWindow.webContents.id);
+            }
+        });
 
         // Open DevTools in development
         if (process.argv.includes('--dev')) {
@@ -119,6 +268,22 @@ class DynamicAppBuilder {
     }
 
     setupIPC() {
+        // CSRF token endpoint - renderer should call this on load
+        ipcMain.handle('get-csrf-token', async (event) => {
+            const senderId = event.sender.id;
+            const token = ipcSecurityMiddleware.generateCSRFToken(senderId);
+            return { success: true, token };
+        });
+
+        // Check if API is already configured (for restoring sessions)
+        ipcMain.handle('check-api-status', async (event) => {
+            return {
+                success: true,
+                configured: this.anthropic !== null,
+                hasStoredKey: await secureStorage.hasApiKey()
+            };
+        });
+
         ipcMain.handle('set-api-key', async (event, apiKey) => {
             // Rate limiting for API key validation
             const clientId = event.sender.id.toString();
@@ -158,8 +323,10 @@ class DynamicAppBuilder {
                 // Test the API key with a minimal request
                 try {
                     logger.info('Testing API key with validation request...');
+                    const aiConfig = configManager.get('ai');
+                    const testModel = aiConfig.testModel || 'claude-3-haiku-20240307';
                     const response = await this.anthropic.messages.create({
-                        model: 'claude-3-haiku-20240307',
+                        model: testModel,
                         max_tokens: 10,
                         messages: [{ role: 'user', content: 'test' }]
                     });
@@ -167,17 +334,13 @@ class DynamicAppBuilder {
                 } catch (testError) {
                     this.anthropic = null;
 
-                    // Enhanced error logging
-                    logger.error('API key validation failed - detailed error:', {
-                        message: testError.message,
-                        status: testError.status,
-                        statusCode: testError.statusCode,
-                        type: testError.type,
-                        error: testError.error,
-                        stack: testError.stack,
+                    // Sanitized error logging - avoid exposing sensitive details
+                    logger.error('API key validation failed', {
+                        status: testError.status || testError.statusCode,
                         code: testError.code,
-                        cause: testError.cause,
-                        fullError: JSON.stringify(testError, Object.getOwnPropertyNames(testError))
+                        type: testError.type,
+                        // Only log message in development
+                        ...(process.env.NODE_ENV === 'development' && { message: testError.message })
                     });
 
                     // Check for specific error types
@@ -222,27 +385,37 @@ class DynamicAppBuilder {
                 this.aiSchemaGenerator = new AISchemaGenerator(this.anthropic);
                 this.codeGenerationModule = new CodeGenerationModule(this.anthropic);
                 this.codeExecutionModule = new CodeExecutionModule(this.config);
+
+                // Store API key securely for future sessions
+                try {
+                    await secureStorage.storeApiKey(apiKey);
+                    logger.info('API key stored securely');
+                } catch (storageError) {
+                    // Non-fatal - key works but won't persist
+                    logger.warn('Failed to store API key securely', { error: storageError.message });
+                }
+
                 return { success: true };
             } catch (error) {
                 return { success: false, error: error.message };
             }
         });
 
-        ipcMain.handle('generate-code', async (event, prompt) => {
-            return await this.generateCode(prompt);
-        });
+        ipcMain.handle('generate-code', ipcValidator.createValidatedHandler('generate-code', async (event, input) => {
+            return await this.generateCode(input.prompt);
+        }));
 
-        ipcMain.handle('execute-code', async (event, { packages, code, sessionId }) => {
-            return await this.executeCode(packages, code, sessionId);
-        });
+        ipcMain.handle('execute-code', ipcValidator.createValidatedHandler('execute-code', async (event, input) => {
+            return await this.executeCode(input.packages, input.code, input.sessionId);
+        }));
 
-        ipcMain.handle('execute-dom-code', async (event, { code, sessionId }) => {
-            return await this.executeDOMCode(code, sessionId);
-        });
+        ipcMain.handle('execute-dom-code', ipcValidator.createValidatedHandler('execute-dom-code', async (event, input) => {
+            return await this.executeDOMCode(input.code, input.sessionId);
+        }));
 
-        ipcMain.handle('cleanup-session', async (event, sessionId) => {
-            return await this.cleanupSession(sessionId);
-        });
+        ipcMain.handle('cleanup-session', ipcValidator.createValidatedHandler('cleanup-session', async (event, input) => {
+            return await this.cleanupSession(input.sessionId);
+        }));
 
         ipcMain.handle('select-api-key-file', async () => {
             const result = await dialog.showOpenDialog(this.mainWindow, {
@@ -286,12 +459,77 @@ class DynamicAppBuilder {
 
         ipcMain.handle('update-config', async (event, newConfig) => {
             try {
-                await configManager.update(newConfig);
-                
+                // Validate config structure - only allow known configuration sections
+                const allowedSections = ['execution', 'security', 'monitoring', 'ai', 'ui'];
+                const allowedKeys = {
+                    execution: ['maxConcurrentExecutions', 'executionTimeout', 'maxMemoryMB', 'maxOutputSize', 'maxDiskSpaceMB'],
+                    security: ['enableResourceMonitoring', 'logAllExecutions', 'blockSuspiciousPackages', 'maxPromptLength'],
+                    monitoring: ['healthCheckInterval', 'maxLogFileSize', 'maxLogFiles', 'enableMetrics'],
+                    ai: ['model', 'temperature', 'maxTokens', 'enableCodeValidation'],
+                    ui: ['enableDevTools', 'autoSavePrompts', 'maxHistoryItems']
+                };
+
+                // Validate incoming config
+                if (typeof newConfig !== 'object' || newConfig === null) {
+                    return { success: false, error: 'Invalid configuration format' };
+                }
+
+                // Check for prototype pollution
+                if ('__proto__' in newConfig || 'constructor' in newConfig || 'prototype' in newConfig) {
+                    logger.logSecurityEvent('config_update_prototype_pollution', { keys: Object.keys(newConfig) });
+                    return { success: false, error: 'Invalid configuration - forbidden properties detected' };
+                }
+
+                // Filter to only allowed sections and keys
+                const sanitizedConfig = {};
+                for (const [section, values] of Object.entries(newConfig)) {
+                    if (!allowedSections.includes(section)) {
+                        logger.warn('Rejected unknown config section', { section });
+                        continue;
+                    }
+
+                    if (typeof values !== 'object' || values === null) {
+                        continue;
+                    }
+
+                    sanitizedConfig[section] = {};
+                    const sectionAllowedKeys = allowedKeys[section] || [];
+
+                    for (const [key, value] of Object.entries(values)) {
+                        if (!sectionAllowedKeys.includes(key)) {
+                            logger.warn('Rejected unknown config key', { section, key });
+                            continue;
+                        }
+
+                        // Type validation for specific keys
+                        if (['maxConcurrentExecutions', 'executionTimeout', 'maxMemoryMB', 'maxOutputSize', 'maxDiskSpaceMB',
+                             'maxPromptLength', 'healthCheckInterval', 'maxLogFileSize', 'maxLogFiles', 'maxTokens', 'maxHistoryItems'].includes(key)) {
+                            if (typeof value !== 'number' || value < 0 || value > 1000000000) {
+                                continue;
+                            }
+                        }
+
+                        if (key === 'temperature' && (typeof value !== 'number' || value < 0 || value > 2)) {
+                            continue;
+                        }
+
+                        if (['enableResourceMonitoring', 'logAllExecutions', 'blockSuspiciousPackages', 'enableCodeValidation',
+                             'enableDevTools', 'autoSavePrompts', 'enableMetrics'].includes(key)) {
+                            if (typeof value !== 'boolean') {
+                                continue;
+                            }
+                        }
+
+                        sanitizedConfig[section][key] = value;
+                    }
+                }
+
+                await configManager.update(sanitizedConfig);
+
                 // Update local config cache
                 const execConfig = configManager.get('execution');
                 this.config = { ...this.config, ...execConfig };
-                
+
                 logger.info('Configuration updated', { config: this.config });
                 return { success: true, config: configManager.getAll() };
             } catch (error) {
@@ -653,6 +891,13 @@ Please generate code that can interact with this database structure. Use the pro
         });
     }
 
+    /**
+     * Generate code from a natural language prompt using Claude AI
+     * @async
+     * @param {string} prompt - The natural language description of the code to generate
+     * @param {number} [retryCount=0] - Current retry attempt number
+     * @returns {Promise<GenerationResult>} Result containing generated code or error
+     */
     async generateCode(prompt, retryCount = 0) {
         if (!this.anthropic) {
             logger.warn('Code generation attempted without API key');
@@ -670,7 +915,7 @@ Please generate code that can interact with this database structure. Use the pro
                     promptLength: prompt.length,
                     cacheAge: Date.now() - cachedResult.metadata?.processingTime || 0
                 });
-                
+
                 return {
                     ...cachedResult,
                     fromCache: true,
@@ -681,8 +926,27 @@ Please generate code that can interact with this database structure. Use the pro
                     }
                 };
             }
+
+            // Deduplicate concurrent requests for the same prompt
+            if (requestDeduplicator.isPending('code-generation', { prompt })) {
+                logger.info('Duplicate code generation request detected, waiting for existing request');
+                return requestDeduplicator.dedupe('code-generation', { prompt }, async () => {
+                    return this._executeCodeGeneration(prompt, retryCount, startTime);
+                });
+            }
         }
 
+        // Use deduplication for the actual generation
+        return requestDeduplicator.dedupe('code-generation', { prompt, retryCount }, async () => {
+            return this._executeCodeGeneration(prompt, retryCount, startTime);
+        });
+    }
+
+    /**
+     * Internal method to execute code generation
+     * @private
+     */
+    async _executeCodeGeneration(prompt, retryCount, startTime) {
         // Check if API key is configured
         if (!this.anthropic) {
             logger.warn('Code generation attempted without API key');
@@ -833,14 +1097,6 @@ NO COMMENTS in code - make it self-explanatory through good naming and structure
 
             let content = response.content[0].text;
 
-            // DEBUG: Write response to file
-            const fs = require('fs');
-            const path = require('path');
-            const debugPath = path.join(__dirname, '../claude-response-debug.txt');
-            fs.writeFileSync(debugPath, `=== RESPONSE AT ${new Date().toISOString()} ===\n${content}\n=== END ===\n\n`, { flag: 'a' });
-            console.error(`[DEBUG] Response written to ${debugPath}`);
-            console.error(`[DEBUG] Response length: ${content.length}`);
-
             logger.debug('AI response received', { contentLength: content.length });
 
             // Extract JSON object from the response (between first { and last })
@@ -848,7 +1104,6 @@ NO COMMENTS in code - make it self-explanatory through good naming and structure
             const jsonEnd = content.lastIndexOf('}') + 1;
             if (jsonStart !== -1 && jsonEnd > jsonStart) {
                 content = content.substring(jsonStart, jsonEnd);
-                console.error(`[DEBUG] Extracted JSON, length: ${content.length}`);
 
                 // Fix: Claude sometimes returns literal newlines in JSON strings which is invalid
                 // We need to properly escape them. Use a state machine to track if we're inside a string.
@@ -895,7 +1150,6 @@ NO COMMENTS in code - make it self-explanatory through good naming and structure
                 }
 
                 content = fixed;
-                console.error(`[DEBUG] Fixed JSON control characters, length: ${content.length}`);
 
                 // Additional fix: Convert HTML attribute double quotes to single quotes in the code field
                 // This prevents JSON parsing errors when Claude uses class="foo" instead of class='foo'
@@ -907,28 +1161,21 @@ NO COMMENTS in code - make it self-explanatory through good naming and structure
                         let codeFixed = tempParse.code.replace(/(\s+\w+(?:-\w+)*)\s*=\s*"([^"]*)"/g, "$1='$2'");
                         tempParse.code = codeFixed;
                         content = JSON.stringify(tempParse);
-                        console.error(`[DEBUG] Converted HTML attributes to single quotes in code field`);
                     }
                 } catch (e) {
                     // If parsing fails at this stage, we'll continue with the original content
                     // and let the main parser handle it
-                    console.error(`[DEBUG] Skipped HTML quote conversion (parse failed): ${e.message}`);
+                    logger.debug('Skipped HTML quote conversion', { error: e.message });
                 }
-
-                // DEBUG: Write the fixed JSON to a file to inspect it
-                const fixedPath = path.join(__dirname, '../claude-response-fixed.json');
-                fs.writeFileSync(fixedPath, content);
-                console.error(`[DEBUG] Fixed JSON written to ${fixedPath}`);
-                console.error(`[DEBUG] Character at position 1623: "${content.charAt(1623)}" (code: ${content.charCodeAt(1623)})`);
-                console.error(`[DEBUG] Context around 1623: "${content.substring(1600, 1650)}"`);
             }
 
             // Use enhanced JSON parser
             const parseResult = await jsonParser.parseAIResponse(content);
             if (!parseResult.success) {
-                console.error(`[DEBUG] PARSING FAILED - Error: ${parseResult.error}`);
-                console.error(`[DEBUG] Parse details: ${JSON.stringify(parseResult.details)}`);
-                logger.error('JSON parsing failed', parseResult);
+                logger.error('JSON parsing failed', {
+                    error: parseResult.error,
+                    contentLength: content.length
+                });
                 return {
                     success: false,
                     error: `Failed to parse AI response: ${parseResult.error}`,
@@ -1162,15 +1409,85 @@ NO COMMENTS in code - make it self-explanatory through good naming and structure
         }
     }
 
+    /**
+     * Detect and auto-create tables referenced in code but not yet created
+     */
+    async detectAndAutoCreateTables(code, sessionId) {
+        try {
+            // Extract table names from database operations in code
+            const tablePatterns = [
+                /electronAPI\.(insertData|queryData|updateData|deleteData)\(['"](\w+)['"]/g,
+                /createTable\(['"](\w+)['"]/g
+            ];
+
+            const tablesUsed = new Set();
+            const tablesCreated = new Set();
+
+            tablePatterns.forEach(pattern => {
+                let match;
+                const regex = new RegExp(pattern);
+                while ((match = regex.exec(code)) !== null) {
+                    const tableName = match[2];
+                    if (match[1] === 'insertData' || match[1] === 'queryData' || match[1] === 'updateData' || match[1] === 'deleteData') {
+                        tablesUsed.add(tableName);
+                    } else {
+                        tablesCreated.add(tableName);
+                    }
+                }
+            });
+
+            // Check which tables are used but not created in the code
+            const tablesToCheck = Array.from(tablesUsed).filter(t => !tablesCreated.has(t));
+
+            if (tablesToCheck.length > 0) {
+                logger.info('Detected tables that might need creation', {
+                    tables: tablesToCheck,
+                    sessionId
+                });
+
+                // Check if tables already exist in database
+                for (const tableName of tablesToCheck) {
+                    try {
+                        const dbName = sessionId; // Use sessionId as database name
+                        const exists = await this.databaseManager.tableExists(dbName, tableName);
+
+                        if (!exists) {
+                            logger.warn(`Table ${tableName} referenced but not created. Code should create it.`);
+                        }
+                    } catch (error) {
+                        // Database doesn't exist yet, that's okay - code will create it
+                        logger.debug(`Database check skipped for ${tableName}:`, error.message);
+                    }
+                }
+            }
+
+            return { success: true, tablesDetected: Array.from(tablesUsed) };
+        } catch (error) {
+            logger.error('Table detection failed', error);
+            return { success: false, error: error.message };
+        }
+    }
+
+    /**
+     * Execute generated code in a sandboxed environment
+     * @async
+     * @param {string[]} packages - List of npm packages required by the code
+     * @param {string} code - The JavaScript code to execute
+     * @param {string} sessionId - Unique session identifier
+     * @returns {Promise<ExecutionResult>} Result containing output or error
+     */
     async executeCode(packages, code, sessionId) {
         const sessionDir = path.join(this.tempDir, sessionId);
         const startTime = Date.now();
-        
+
         logger.info('Starting code execution', {
             session_id: sessionId,
             packages: packages || [],
             code_length: code.length
         });
+
+        // Detect tables referenced in code
+        await this.detectAndAutoCreateTables(code, sessionId);
 
         // Check if we're exceeding concurrent execution limits
         if (this.activeSessions.size >= this.config.maxConcurrentExecutions) {
@@ -1314,7 +1631,7 @@ NO COMMENTS in code - make it self-explanatory through good naming and structure
             this.activeSessions.delete(sessionId);
             
             // Remove session directory
-            await fs.rmdir(sessionDir, { recursive: true });
+            await fs.rm(sessionDir, { recursive: true, force: true });
             
             logger.info('Session cleanup completed', { session_id: sessionId });
             return { success: true };
@@ -1466,6 +1783,7 @@ app.on('activate', () => {
 
 // Comprehensive cleanup on exit
 let isCleaningUp = false;
+let cleanupCompleted = false;
 
 async function performCleanup() {
     if (isCleaningUp) return;
@@ -1538,7 +1856,7 @@ async function performCleanup() {
     // 7. Clean up temp directory (after other cleanup)
     try {
         const tempDir = path.join(__dirname, '..', 'temp');
-        await fs.rmdir(tempDir, { recursive: true });
+        await fs.rm(tempDir, { recursive: true, force: true });
         logger.info('Temp directory cleaned');
     } catch (error) {
         if (error.code !== 'ENOENT') {
@@ -1551,8 +1869,30 @@ async function performCleanup() {
 
 // Register cleanup handlers
 app.on('before-quit', async (event) => {
+    // If cleanup is already done, allow quit to proceed
+    if (cleanupCompleted) {
+        return;
+    }
+
+    // If cleanup is in progress, prevent quit but don't start another cleanup
+    if (isCleaningUp) {
+        event.preventDefault();
+        return;
+    }
+
+    // Start cleanup
     event.preventDefault();
-    await performCleanup();
+    isCleaningUp = true;
+
+    try {
+        await performCleanup();
+        cleanupCompleted = true;
+    } catch (error) {
+        logger.error('Cleanup failed, forcing quit', { error: error.message });
+        cleanupCompleted = true;
+    }
+
+    // Now quit - this will trigger before-quit again but cleanupCompleted will be true
     app.quit();
 });
 
@@ -1564,13 +1904,25 @@ app.on('window-all-closed', () => {
 
 // Handle uncaught errors during shutdown
 process.on('SIGTERM', async () => {
+    if (isCleaningUp || cleanupCompleted) {
+        process.exit(0);
+        return;
+    }
+    isCleaningUp = true;
     logger.info('SIGTERM received, shutting down gracefully');
     await performCleanup();
+    cleanupCompleted = true;
     process.exit(0);
 });
 
 process.on('SIGINT', async () => {
+    if (isCleaningUp || cleanupCompleted) {
+        process.exit(0);
+        return;
+    }
+    isCleaningUp = true;
     logger.info('SIGINT received, shutting down gracefully');
     await performCleanup();
+    cleanupCompleted = true;
     process.exit(0);
 });

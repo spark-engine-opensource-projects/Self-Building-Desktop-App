@@ -1,5 +1,37 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
+// Default database name for simplified API
+const DEFAULT_DB = 'app';
+
+/**
+ * Transform array-based schema to object-based schema
+ * Converts: { columns: [{name: 'id', type: 'INTEGER', ...}] }
+ * To:       { columns: {id: {type: 'integer', ...}} }
+ */
+function transformSchema(schema) {
+    if (!schema || !schema.columns) return schema;
+
+    // If columns is already an object, return as-is
+    if (!Array.isArray(schema.columns)) return schema;
+
+    const transformedColumns = {};
+    for (const col of schema.columns) {
+        const { name, ...rest } = col;
+        if (name) {
+            // Convert type to lowercase for consistency
+            if (rest.type) {
+                rest.type = rest.type.toLowerCase();
+            }
+            transformedColumns[name] = rest;
+        }
+    }
+
+    return {
+        ...schema,
+        columns: transformedColumns
+    };
+}
+
 // Expose protected methods that allow the renderer process to use
 // the ipcRenderer without exposing the entire object
 contextBridge.exposeInMainWorld('electronAPI', {
@@ -35,7 +67,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // User feedback
     submitFeedback: (feedback) => ipcRenderer.invoke('submit-feedback', feedback),
     
-    // Database Management
+    // Database Management (full API with explicit database name)
     dbListDatabases: () => ipcRenderer.invoke('db-list-databases'),
     dbListTables: (dbName) => ipcRenderer.invoke('db-list-tables', dbName),
     dbCreateTable: (dbName, tableName, schema) => ipcRenderer.invoke('db-create-table', { dbName, tableName, schema }),
@@ -45,7 +77,130 @@ contextBridge.exposeInMainWorld('electronAPI', {
     dbDeleteData: (dbName, tableName, id) => ipcRenderer.invoke('db-delete-data', { dbName, tableName, id }),
     dbExecuteSQL: (dbName, sql, params) => ipcRenderer.invoke('db-execute-sql', { dbName, sql, params }),
     dbExportDatabase: (dbName) => ipcRenderer.invoke('db-export-database', dbName),
-    
+
+    // ============================================================
+    // SIMPLIFIED DATABASE API (for AI-generated code)
+    // Uses default 'app' database and accepts array-based schemas
+    // ============================================================
+
+    /**
+     * Create a table in the default database
+     * @param {string} tableName - Name of the table
+     * @param {Object} schema - Schema with columns array or object
+     * @example
+     * await window.electronAPI.createTable('todos', {
+     *   columns: [
+     *     {name: 'id', type: 'INTEGER', primaryKey: true, autoIncrement: true},
+     *     {name: 'task', type: 'TEXT', required: true},
+     *     {name: 'completed', type: 'INTEGER', default: 0}
+     *   ]
+     * });
+     */
+    createTable: (tableName, schema) => {
+        const transformedSchema = transformSchema(schema);
+        return ipcRenderer.invoke('db-create-table', {
+            dbName: DEFAULT_DB,
+            tableName,
+            schema: transformedSchema
+        });
+    },
+
+    /**
+     * Insert data into a table
+     * @param {string} tableName - Name of the table
+     * @param {Object} data - Data to insert
+     * @returns {Promise<{success: boolean, id?: number, error?: string}>}
+     */
+    insertData: (tableName, data) => {
+        return ipcRenderer.invoke('db-insert-data', {
+            dbName: DEFAULT_DB,
+            tableName,
+            data
+        });
+    },
+
+    /**
+     * Query data from a table
+     * @param {string} tableName - Name of the table
+     * @param {Object} options - Query options (where, orderBy, limit, offset)
+     * @returns {Promise<{success: boolean, data?: Array, error?: string}>}
+     * @example
+     * const result = await window.electronAPI.queryData('todos', {
+     *   where: {completed: 0},
+     *   orderBy: 'id DESC',
+     *   limit: 10
+     * });
+     */
+    queryData: (tableName, options = {}) => {
+        return ipcRenderer.invoke('db-query-data', {
+            dbName: DEFAULT_DB,
+            tableName,
+            options
+        });
+    },
+
+    /**
+     * Update data in a table
+     * @param {string} tableName - Name of the table
+     * @param {number} id - ID of the record to update
+     * @param {Object} data - Fields to update
+     * @returns {Promise<{success: boolean, changes?: number, error?: string}>}
+     */
+    updateData: (tableName, id, data) => {
+        return ipcRenderer.invoke('db-update-data', {
+            dbName: DEFAULT_DB,
+            tableName,
+            id,
+            data
+        });
+    },
+
+    /**
+     * Delete data from a table
+     * @param {string} tableName - Name of the table
+     * @param {number} id - ID of the record to delete
+     * @returns {Promise<{success: boolean, changes?: number, error?: string}>}
+     */
+    deleteData: (tableName, id) => {
+        return ipcRenderer.invoke('db-delete-data', {
+            dbName: DEFAULT_DB,
+            tableName,
+            id
+        });
+    },
+
+    /**
+     * List all tables in the default database
+     * @returns {Promise<{success: boolean, tables?: string[], error?: string}>}
+     */
+    listTables: () => {
+        return ipcRenderer.invoke('db-list-tables', DEFAULT_DB);
+    },
+
+    /**
+     * Execute raw SQL query on the default database
+     * @param {string} sql - SQL query to execute
+     * @param {Array} params - Optional parameters for prepared statement
+     * @returns {Promise<Array|{changes: number}>} - Query results or changes count
+     * @example
+     * // SELECT query
+     * const rows = await window.electronAPI.executeQuery('SELECT * FROM users WHERE age > ?', [18]);
+     * // INSERT/UPDATE/DELETE
+     * await window.electronAPI.executeQuery('INSERT INTO users (name) VALUES (?)', ['John']);
+     */
+    executeQuery: async (sql, params = []) => {
+        const result = await ipcRenderer.invoke('db-execute-sql', {
+            dbName: DEFAULT_DB,
+            sql,
+            params
+        });
+        // Return the data directly for easier use
+        if (result.success) {
+            return result.data !== undefined ? result.data : result;
+        }
+        throw new Error(result.error || 'Query failed');
+    },
+
     // AI Schema Generation
     dbGenerateSchema: (description) => ipcRenderer.invoke('db-generate-schema', description),
     dbGenerateDatabaseScript: (description) => ipcRenderer.invoke('db-generate-database-script', description),

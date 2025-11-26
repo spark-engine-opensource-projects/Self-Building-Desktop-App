@@ -208,7 +208,7 @@ class CodeExecutionModule {
             this.activeSessions.delete(sessionId);
             
             // Remove session directory
-            await fs.rmdir(sessionDir, { recursive: true });
+            await fs.rm(sessionDir, { recursive: true, force: true });
             
             logger.info('Session cleanup completed', { session_id: sessionId });
             return { success: true };

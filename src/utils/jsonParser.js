@@ -32,7 +32,7 @@ class EnhancedJSONParser {
                 const match = content.match(/```json\s*([\s\S]*?)```/i);
                 return match ? match[1].trim() : null;
             },
-            
+
             // Strategy 2: Generic code block
             () => {
                 const match = content.match(/```\s*([\s\S]*?)```/);
@@ -45,18 +45,18 @@ class EnhancedJSONParser {
                 }
                 return null;
             },
-            
+
             // Strategy 3: Balanced brace extraction
             () => {
                 return this.extractBalancedJSON(content);
             },
-            
+
             // Strategy 4: Line-by-line JSON detection
             () => {
                 const lines = content.split('\n');
                 let jsonStart = -1;
                 let jsonEnd = -1;
-                
+
                 for (let i = 0; i < lines.length; i++) {
                     const line = lines[i].trim();
                     if (line.startsWith('{') && jsonStart === -1) {
@@ -67,9 +67,48 @@ class EnhancedJSONParser {
                         break;
                     }
                 }
-                
+
                 if (jsonStart !== -1 && jsonEnd !== -1) {
                     return lines.slice(jsonStart, jsonEnd + 1).join('\n');
+                }
+                return null;
+            },
+
+            // Strategy 5: Aggressive multiline pattern matching (NEW)
+            () => {
+                // Look for JSON objects with required fields anywhere in text
+                const pattern = /(\{[\s\S]*?"packages"[\s\S]*?"code"[\s\S]*?"description"[\s\S]*?\})/;
+                const match = content.match(pattern);
+                if (match) {
+                    // Extract the balanced JSON from this starting point
+                    return this.extractBalancedJSON(match[0]);
+                }
+                return null;
+            },
+
+            // Strategy 6: Find largest JSON-like object (NEW)
+            () => {
+                const jsonCandidates = [];
+                const regex = /\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/g;
+                let match;
+
+                while ((match = regex.exec(content)) !== null) {
+                    jsonCandidates.push(match[0]);
+                }
+
+                // Sort by length (longest first) and try to parse
+                jsonCandidates.sort((a, b) => b.length - a.length);
+
+                for (const candidate of jsonCandidates) {
+                    try {
+                        const parsed = JSON.parse(candidate);
+                        // Check if it has our required fields
+                        if (parsed.packages !== undefined && parsed.code !== undefined) {
+                            return candidate;
+                        }
+                    } catch (e) {
+                        continue;
+                    }
                 }
                 return null;
             }
@@ -209,22 +248,26 @@ class EnhancedJSONParser {
     repairJSON(jsonString) {
         let repaired = jsonString;
 
+        // First, try to fix truncated JSON (most common issue with long responses)
+        try {
+            JSON.parse(repaired);
+            return repaired; // Already valid
+        } catch (error) {
+            if (error.message.includes('Unterminated string')) {
+                repaired = this.fixTruncatedJSON(repaired);
+            }
+        }
+
         // Common repairs
         const repairs = [
             // Fix trailing commas
             () => repaired.replace(/,(\s*[}\]])/g, '$1'),
-            
+
             // Fix missing quotes around keys
             () => repaired.replace(/([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:/g, '$1"$2":'),
-            
-            // Fix single quotes to double quotes
-            () => repaired.replace(/'/g, '"'),
-            
-            // Fix unescaped quotes in strings
-            () => {
-                // This is a simplified version - in practice would need more sophisticated parsing
-                return repaired.replace(/(?<!\\)"/g, '\\"');
-            }
+
+            // Remove control characters
+            () => repaired.replace(/[\x00-\x1F\x7F]/g, '')
         ];
 
         for (const repair of repairs) {
@@ -240,6 +283,67 @@ class EnhancedJSONParser {
         }
 
         return repaired;
+    }
+
+    /**
+     * Fix truncated JSON by completing unterminated strings and closing braces
+     */
+    fixTruncatedJSON(jsonString) {
+        let fixed = jsonString;
+
+        // Count opening and closing braces/brackets/quotes
+        let openBraces = 0;
+        let openBrackets = 0;
+        let inString = false;
+        let escaped = false;
+
+        for (let i = 0; i < fixed.length; i++) {
+            const char = fixed[i];
+
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+
+            if (char === '\\') {
+                escaped = true;
+                continue;
+            }
+
+            if (char === '"' && !escaped) {
+                inString = !inString;
+            }
+
+            if (!inString) {
+                if (char === '{') openBraces++;
+                else if (char === '}') openBraces--;
+                else if (char === '[') openBrackets++;
+                else if (char === ']') openBrackets--;
+            }
+        }
+
+        // If we're in an unterminated string, close it
+        if (inString) {
+            // Remove any trailing incomplete content
+            fixed = fixed.replace(/[^"]*$/, '');
+            fixed += '"';
+            logger.debug('Closed unterminated string');
+        }
+
+        // Close any unclosed brackets
+        while (openBrackets > 0) {
+            fixed += ']';
+            openBrackets--;
+        }
+
+        // Close any unclosed braces
+        while (openBraces > 0) {
+            fixed += '}';
+            openBraces--;
+        }
+
+        logger.debug(`Fixed truncated JSON: ${openBraces} braces, ${openBrackets} brackets closed`);
+        return fixed;
     }
 
     /**
@@ -387,4 +491,8 @@ class EnhancedJSONParser {
     }
 }
 
-module.exports = new EnhancedJSONParser();
+// Export both instance and class for testability
+const instance = new EnhancedJSONParser();
+module.exports = instance;
+module.exports.EnhancedJSONParser = EnhancedJSONParser;
+module.exports.getInstance = () => instance;

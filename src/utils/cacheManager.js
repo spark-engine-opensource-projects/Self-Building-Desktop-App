@@ -27,18 +27,52 @@ class CacheManager {
             evictionPolicy: 'lru' // 'lru', 'lfu', 'fifo'
         };
         
+        // Timer reference for cleanup
+        this.cleanupTimerId = null;
+
         // Start periodic cleanup
         this.startCleanupTimer();
     }
-    
+
     /**
      * Start periodic cleanup timer
      */
     startCleanupTimer() {
-        setInterval(() => {
+        // Clear existing timer if any
+        if (this.cleanupTimerId) {
+            clearInterval(this.cleanupTimerId);
+        }
+
+        this.cleanupTimerId = setInterval(() => {
             this.cleanupExpiredEntries();
             this.enforceMemoryLimit();
         }, 60000); // Run every minute
+
+        // Ensure timer doesn't prevent process exit
+        if (this.cleanupTimerId.unref) {
+            this.cleanupTimerId.unref();
+        }
+    }
+
+    /**
+     * Stop the cleanup timer
+     */
+    stopCleanupTimer() {
+        if (this.cleanupTimerId) {
+            clearInterval(this.cleanupTimerId);
+            this.cleanupTimerId = null;
+        }
+    }
+
+    /**
+     * Cleanup resources and stop timers
+     */
+    destroy() {
+        this.stopCleanupTimer();
+        this.cache.clear();
+        this.accessOrder.clear();
+        this.currentMemoryUsage = 0;
+        logger.info('CacheManager destroyed');
     }
     
     /**
@@ -521,4 +555,8 @@ class CacheManager {
     }
 }
 
-module.exports = new CacheManager();
+// Export both instance and class for testability
+const instance = new CacheManager();
+module.exports = instance;
+module.exports.CacheManager = CacheManager;
+module.exports.getInstance = () => instance;

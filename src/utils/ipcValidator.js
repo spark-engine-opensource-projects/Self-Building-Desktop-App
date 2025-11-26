@@ -375,4 +375,122 @@ class IPCValidator {
     }
 }
 
-module.exports = new IPCValidator();
+const instance = new IPCValidator();
+
+// Export standalone validation functions for convenience
+function validateInput(input, options = {}) {
+    if (input === null || input === undefined) {
+        throw new Error('Input cannot be null or undefined');
+    }
+    if (typeof input === 'string') {
+        if (options.maxLength && input.length > options.maxLength) {
+            throw new Error('Input exceeds maximum length');
+        }
+        // Check for dangerous patterns
+        const dangerousPatterns = [
+            /<script[^>]*>.*?<\/script>/gi,
+            /javascript:/gi,
+            /data:text\/html/gi,
+            /\$\{.*\}/,
+            /require\s*\(['"]/,
+            /eval\s*\(/gi,
+            /\.\.[\\/]/,
+            /DROP\s+TABLE/gi,
+            /DELETE\s+FROM/gi,
+            /INSERT\s+INTO/gi,
+            /TRUNCATE\s+TABLE/gi
+        ];
+        for (const pattern of dangerousPatterns) {
+            if (pattern.test(input)) {
+                throw new Error('Input contains dangerous pattern');
+            }
+        }
+    }
+    return input;
+}
+
+function sanitizeInput(input, options = {}) {
+    if (typeof input === 'string') {
+        return instance.sanitizeString(input, options);
+    }
+    if (typeof input === 'object' && input !== null) {
+        return instance.sanitizeObject(input);
+    }
+    return input;
+}
+
+function validatePrompt(prompt) {
+    if (!prompt || typeof prompt !== 'string') {
+        throw new Error('Prompt cannot be empty');
+    }
+    if (prompt.trim() === '') {
+        throw new Error('Prompt cannot be empty');
+    }
+
+    const dangerousPatterns = [
+        /\bpasswd\b/i,
+        /\bshadow\b/i,
+        /\bshell\s*command/i,
+        /\bexecut(e|ing)\s+(shell|system|command)/i,
+        /\bfile\s*system/i,
+        /\bexternal\s*api/i,
+        /\bmodif(y|ies)\s+system/i,
+        /\bkeylogger/i,
+        /\bnetwork\s*scanner/i,
+        /\bbypass\s+security/i,
+        /\bmalware/i,
+        /\bvirus/i,
+        /\bpassword\s*crack/i,
+        /\bddos/i,
+        /\bsql\s*injection/i,
+        /\bcross-site\s*script/i,
+        /\bxss\b/i,
+        /\bcryptocurrency\s*min/i
+    ];
+
+    for (const pattern of dangerousPatterns) {
+        if (pattern.test(prompt)) {
+            throw new Error('Prompt contains dangerous content');
+        }
+    }
+    return prompt;
+}
+
+function validateFileName(fileName, options = {}) {
+    if (!fileName || typeof fileName !== 'string') {
+        throw new Error('File name cannot be empty');
+    }
+
+    // Check for path traversal
+    if (/\.\.[\\/]|[\\/]\.\./.test(fileName)) {
+        throw new Error('Path traversal detected');
+    }
+
+    // Check for absolute paths
+    if (/^[\/\\]|^[a-zA-Z]:[\/\\]/.test(fileName)) {
+        throw new Error('Absolute paths not allowed');
+    }
+
+    // Check for dangerous extensions
+    const dangerousExtensions = ['.exe', '.bat', '.cmd', '.sh', '.ps1', '.vbs', '.dll', '.msi'];
+    const ext = fileName.toLowerCase().split('.').pop();
+    if (dangerousExtensions.some(e => fileName.toLowerCase().endsWith(e))) {
+        throw new Error('Dangerous file extension');
+    }
+
+    // Check for Windows reserved names
+    const reserved = ['con', 'prn', 'aux', 'nul', 'com1', 'com2', 'com3', 'com4', 'lpt1', 'lpt2', 'lpt3'];
+    const baseName = fileName.split(/[\/\\]/).pop().split('.')[0].toLowerCase();
+    if (reserved.includes(baseName)) {
+        throw new Error('Reserved file name');
+    }
+
+    return fileName;
+}
+
+// Export instance and standalone functions
+module.exports = instance;
+module.exports.validateInput = validateInput;
+module.exports.sanitizeInput = sanitizeInput;
+module.exports.validatePrompt = validatePrompt;
+module.exports.validateFileName = validateFileName;

@@ -34,14 +34,45 @@ class DatabaseManager {
         // Query caching for repeated operations
         this.queryCache = new Map();
         this.preparedStatements = new Map();
-        
-        this.initializeDataDirectory();
+
+        this.initialized = false;
+        this.initializationPromise = null;
         this.startMaintenanceTasks();
-        
+
         // Cleanup on process exit
         process.on('exit', () => this.cleanup());
         process.on('SIGINT', () => this.cleanup());
         process.on('SIGTERM', () => this.cleanup());
+    }
+
+    /**
+     * Initialize the database manager - ensures data directory exists
+     * Can be called multiple times safely (idempotent)
+     * @returns {Promise<{success: boolean}>}
+     */
+    async initialize() {
+        if (this.initialized) {
+            return { success: true };
+        }
+
+        if (this.initializationPromise) {
+            return this.initializationPromise;
+        }
+
+        this.initializationPromise = this._performInitialization();
+        return this.initializationPromise;
+    }
+
+    async _performInitialization() {
+        try {
+            await this.initializeDataDirectory();
+            this.initialized = true;
+            logger.info('DatabaseManager initialized successfully');
+            return { success: true };
+        } catch (error) {
+            logger.error('DatabaseManager initialization failed', { error: error.message });
+            return { success: false, error: error.message };
+        }
     }
 
     async initializeDataDirectory() {
@@ -63,12 +94,22 @@ class DatabaseManager {
             this.cleanupIdleConnections();
             this.pruneConnectionPools();
         }, 300000); // 5 minutes
-        
+
         // Run statistics collection every minute
         this.statsInterval = setInterval(() => {
             this.collectPoolStatistics();
         }, 60000);
-        
+
+        // Optimize databases every hour
+        this.optimizeInterval = setInterval(() => {
+            this.optimizeDatabases();
+        }, 60 * 60 * 1000);
+
+        // Clear query cache every 30 minutes
+        this.cacheCleanupInterval = setInterval(() => {
+            this.cleanupQueryCache();
+        }, 30 * 60 * 1000);
+
         logger.info('Database maintenance tasks started');
     }
     
@@ -167,25 +208,62 @@ class DatabaseManager {
     
     /**
      * Release connection back to pool
+     * @param {string|object} dbNameOrConnection - Database name or connection object
+     * @param {object} [connection] - Connection object (if first param is dbName)
      */
-    releaseConnection(dbName, connection) {
-        const poolKey = dbName;
+    releaseConnection(dbNameOrConnection, connection) {
+        // Support both signatures: (dbName, connection) and (connection)
+        let poolKey;
+        let conn;
+
+        if (typeof dbNameOrConnection === 'string') {
+            poolKey = dbNameOrConnection;
+            conn = connection;
+        } else {
+            conn = dbNameOrConnection;
+            poolKey = conn.dbName;
+        }
+
         const pool = this.connectionPools.get(poolKey);
-        
+
         if (!pool) {
             logger.warn('Attempted to release connection to non-existent pool', { poolKey });
             return;
         }
-        
-        pool.inUse.delete(connection);
-        connection.lastUsed = Date.now();
-        pool.available.push(connection);
+
+        if (!pool.inUse.has(conn)) {
+            logger.warn('Connection not found in in-use set', { poolKey });
+            return;
+        }
+
+        pool.inUse.delete(conn);
+        conn.lastUsed = Date.now();
         pool.stats.activeConnections--;
-        
-        logger.debug('Connection released to pool', { 
-            pool: poolKey, 
-            active: pool.inUse.size, 
-            available: pool.available.length 
+
+        // Check if connection should be closed due to idle timeout
+        const idleTime = Date.now() - conn.lastUsed;
+        if (idleTime > this.poolOptions.idleTimeout) {
+            try {
+                if (conn.db && typeof conn.db.close === 'function') {
+                    conn.db.close();
+                }
+                pool.created--;
+                logger.debug('Idle connection closed on release', {
+                    connectionId: conn.id,
+                    database: poolKey,
+                    idleTime
+                });
+            } catch (error) {
+                logger.error('Error closing idle connection', { poolKey, error });
+            }
+        } else {
+            pool.available.push(conn);
+        }
+
+        logger.debug('Connection released to pool', {
+            pool: poolKey,
+            active: pool.inUse.size,
+            available: pool.available.length
         });
     }
     
@@ -446,34 +524,6 @@ class DatabaseManager {
     }
 
     /**
-     * Return connection to pool
-     */
-    releaseConnection(connection) {
-        const poolKey = connection.dbName;
-        const pool = this.connectionPools.get(poolKey);
-        
-        if (pool && pool.inUse.has(connection)) {
-            pool.inUse.delete(connection);
-            pool.stats.activeConnections--;
-            connection.lastUsed = Date.now();
-            
-            // Check if connection should be closed (idle timeout)
-            const idleTime = Date.now() - connection.lastUsed;
-            if (idleTime > this.poolOptions.idleTimeout) {
-                connection.db.close();
-                pool.created--;
-                logger.debug('Idle connection closed', { 
-                    connectionId: connection.id,
-                    database: connection.dbName,
-                    idleTime
-                });
-            } else {
-                pool.available.push(connection);
-            }
-        }
-    }
-
-    /**
      * Apply performance optimizations to connection
      */
     optimizeConnection(db, dbName) {
@@ -567,29 +617,9 @@ class DatabaseManager {
     }
 
     /**
-     * Start maintenance tasks
+     * Cleanup idle connections (secondary cleanup pass)
      */
-    startMaintenanceTasks() {
-        // Cleanup idle connections every 5 minutes
-        setInterval(() => {
-            this.cleanupIdleConnections();
-        }, 5 * 60 * 1000);
-
-        // Optimize databases every hour
-        setInterval(() => {
-            this.optimizeDatabases();
-        }, 60 * 60 * 1000);
-
-        // Clear query cache every 30 minutes
-        setInterval(() => {
-            this.cleanupQueryCache();
-        }, 30 * 60 * 1000);
-    }
-
-    /**
-     * Cleanup idle connections
-     */
-    cleanupIdleConnections() {
+    cleanupIdleConnectionsSecondary() {
         const now = Date.now();
         
         for (const [poolKey, pool] of this.connectionPools) {
@@ -739,13 +769,14 @@ class DatabaseManager {
             // Build CREATE TABLE statement
             const columns = this.buildColumns(schema.columns);
             const constraints = this.buildConstraints(schema.constraints || []);
-            
+
+            // Note: table constraints must come AFTER all column definitions
             const createTableSQL = `
                 CREATE TABLE IF NOT EXISTS ${tableName} (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    ${columns}${constraints ? ', ' + constraints : ''},
+                    ${columns},
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP${constraints ? ', ' + constraints : ''}
                 )
             `;
 
@@ -887,51 +918,100 @@ class DatabaseManager {
     }
 
     /**
+     * Validate and sanitize ORDER BY clause to prevent SQL injection
+     */
+    sanitizeOrderBy(orderBy) {
+        if (!orderBy || typeof orderBy !== 'string') {
+            return null;
+        }
+
+        // Only allow alphanumeric, underscores, and basic ORDER BY syntax
+        // Pattern: column_name or column_name DESC/ASC
+        const orderByPattern = /^[a-zA-Z_][a-zA-Z0-9_]*(?:\s+(?:ASC|DESC))?(?:\s*,\s*[a-zA-Z_][a-zA-Z0-9_]*(?:\s+(?:ASC|DESC))?)*$/i;
+
+        if (!orderByPattern.test(orderBy.trim())) {
+            logger.logSecurityEvent('invalid_orderby_attempt', { orderBy });
+            return null;
+        }
+
+        return orderBy.trim();
+    }
+
+    /**
+     * Validate table name for use in queries
+     */
+    validateTableName(tableName) {
+        if (!tableName || typeof tableName !== 'string') {
+            throw new Error('Table name must be a non-empty string');
+        }
+
+        // Only allow alphanumeric and underscores, must start with letter
+        if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(tableName)) {
+            throw new Error('Invalid table name. Must start with letter and contain only letters, numbers, and underscores.');
+        }
+
+        return true;
+    }
+
+    /**
      * Query data from table
      */
     async queryData(dbName, tableName, options = {}) {
         try {
             const db = await this.connectDatabase(dbName);
-            
+
+            // Validate table name to prevent SQL injection
+            this.validateTableName(tableName);
+
             let sql = `SELECT * FROM ${tableName}`;
             const params = [];
-            
+
             // Add WHERE clause
             if (options.where) {
                 const whereClause = this.buildWhereClause(options.where);
                 sql += ` WHERE ${whereClause.sql}`;
                 params.push(...whereClause.params);
             }
-            
-            // Add ORDER BY
+
+            // Add ORDER BY with sanitization
             if (options.orderBy) {
-                sql += ` ORDER BY ${options.orderBy}`;
-                if (options.order && options.order.toLowerCase() === 'desc') {
-                    sql += ' DESC';
+                const sanitizedOrderBy = this.sanitizeOrderBy(options.orderBy);
+                if (sanitizedOrderBy) {
+                    sql += ` ORDER BY ${sanitizedOrderBy}`;
+                    // Only add DESC if not already in orderBy and explicitly requested
+                    if (options.order && options.order.toLowerCase() === 'desc' && !sanitizedOrderBy.toLowerCase().includes('desc')) {
+                        sql += ' DESC';
+                    }
                 }
             }
-            
-            // Add LIMIT and OFFSET
+
+            // Add LIMIT and OFFSET (parseInt ensures integer)
             if (options.limit) {
-                sql += ` LIMIT ${parseInt(options.limit)}`;
-                if (options.offset) {
-                    sql += ` OFFSET ${parseInt(options.offset)}`;
+                const limit = parseInt(options.limit, 10);
+                if (!isNaN(limit) && limit > 0) {
+                    sql += ` LIMIT ${limit}`;
+                    if (options.offset) {
+                        const offset = parseInt(options.offset, 10);
+                        if (!isNaN(offset) && offset >= 0) {
+                            sql += ` OFFSET ${offset}`;
+                        }
+                    }
                 }
             }
-            
+
             const stmt = db.prepare(sql);
             const rows = stmt.all(...params);
-            
+
             // Transform data back (e.g., parse JSON fields)
             const schema = await this.getTableSchema(db, tableName);
             const transformedRows = rows.map(row => this.transformRowData(row, schema));
-            
-            logger.info('Data queried successfully', { 
-                database: dbName, 
-                table: tableName, 
-                count: rows.length 
+
+            logger.info('Data queried successfully', {
+                database: dbName,
+                table: tableName,
+                count: rows.length
             });
-            
+
             return { success: true, data: transformedRows, count: rows.length };
         } catch (error) {
             logger.error('Failed to query data', { database: dbName, table: tableName, error });
@@ -1016,23 +1096,26 @@ class DatabaseManager {
      * Analyze existing table structure
      */
     analyzeTableStructure(db, tableName) {
+        // Validate table name to prevent SQL injection in PRAGMA command
+        this.validateTableName(tableName);
+
         const pragma = db.prepare(`PRAGMA table_info(${tableName})`);
         const columns = pragma.all();
-        
+
         const schema = { columns: {} };
-        
+
         columns.forEach(col => {
             if (col.name === 'id' || col.name === 'created_at' || col.name === 'updated_at') {
                 return; // Skip system columns
             }
-            
+
             schema.columns[col.name] = {
                 type: this.mapSQLiteTypeToJS(col.type),
                 required: col.notnull === 1,
                 default: col.dflt_value
             };
         });
-        
+
         return schema;
     }
 
@@ -1156,10 +1239,14 @@ class DatabaseManager {
     async listTables(dbName) {
         try {
             const db = await this.connectDatabase(dbName);
-            
+
+            // Note: underscore must be escaped in LIKE pattern since it's a wildcard
+            // Also exclude sqlite_sequence which is auto-created for AUTOINCREMENT
             const stmt = db.prepare(`
-                SELECT name FROM sqlite_master 
-                WHERE type='table' AND name NOT LIKE '_%'
+                SELECT name FROM sqlite_master
+                WHERE type='table'
+                  AND name NOT LIKE '!_%' ESCAPE '!'
+                  AND name != 'sqlite_sequence'
                 ORDER BY name
             `);
             

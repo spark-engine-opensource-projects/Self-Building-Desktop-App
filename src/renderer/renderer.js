@@ -96,7 +96,8 @@ class DynamicAppRenderer {
         this.refreshDataBtn = document.getElementById('refreshDataBtn');
         this.queryBuilderBtn = document.getElementById('queryBuilderBtn');
         this.dataTable = document.getElementById('dataTable');
-        
+        this.dataPagination = document.getElementById('dataPagination');
+
         // Schema Generator
         this.schemaGenerator = document.getElementById('schemaGenerator');
         this.schemaDescription = document.getElementById('schemaDescription');
@@ -136,6 +137,11 @@ class DynamicAppRenderer {
         this.newSessionBtn.addEventListener('click', () => this.handleNewSession());
         this.themeToggle.addEventListener('click', () => this.toggleTheme());
 
+        // Template buttons
+        document.querySelectorAll('.template-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => this.loadTemplate(e.target.dataset.template));
+        });
+
         // Enter key support for API key input
         this.apiKeyInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') {
@@ -153,9 +159,47 @@ class DynamicAppRenderer {
         // Database event listeners
         this.toggleDatabaseBtn.addEventListener('click', () => this.toggleDatabaseSection());
         this.performanceDashboardBtn.addEventListener('click', () => this.openPerformanceDashboard());
+
+        // DB Context Sidebar listeners
+        const toggleDbContextBtn = document.getElementById('toggleDbContext');
+        const closeSidebarBtn = document.getElementById('closeSidebar');
+        const refreshDbContextBtn = document.getElementById('refreshDbContext');
+
+        if (toggleDbContextBtn) {
+            toggleDbContextBtn.addEventListener('click', () => this.toggleDbContextSidebar());
+        }
+        if (closeSidebarBtn) {
+            closeSidebarBtn.addEventListener('click', () => this.closeDbContextSidebar());
+        }
+        if (refreshDbContextBtn) {
+            refreshDbContextBtn.addEventListener('click', () => this.refreshDbContext());
+        }
         this.showDbManagerBtn.addEventListener('click', () => this.showDatabaseManager());
         this.showSchemaGeneratorBtn.addEventListener('click', () => this.showSchemaGenerator());
-        
+
+        // Visual Schema Designer
+        const showVisualDesignerBtn = document.getElementById('showVisualDesignerBtn');
+        const addColumnBtn = document.getElementById('addColumnBtn');
+        const generateSchemaCodeBtn = document.getElementById('generateSchemaCodeBtn');
+        const createTableFromDesignBtn = document.getElementById('createTableFromDesignBtn');
+        const clearDesignerBtn = document.getElementById('clearDesignerBtn');
+
+        if (showVisualDesignerBtn) {
+            showVisualDesignerBtn.addEventListener('click', () => this.showVisualDesigner());
+        }
+        if (addColumnBtn) {
+            addColumnBtn.addEventListener('click', () => this.addColumnRow());
+        }
+        if (generateSchemaCodeBtn) {
+            generateSchemaCodeBtn.addEventListener('click', () => this.generateSchemaCode());
+        }
+        if (createTableFromDesignBtn) {
+            createTableFromDesignBtn.addEventListener('click', () => this.createTableFromDesign());
+        }
+        if (clearDesignerBtn) {
+            clearDesignerBtn.addEventListener('click', () => this.clearDesigner());
+        }
+
         // Database Manager with debouncing
         this.databaseSelect.addEventListener('change', () => this.handleDatabaseChange());
         this.createDatabaseBtn.addEventListener('click', () => this.handleCreateDatabase());
@@ -383,35 +427,78 @@ class DynamicAppRenderer {
     showEnhancedError(result) {
         const errorDiv = document.createElement('div');
         errorDiv.className = 'enhanced-error';
-        errorDiv.innerHTML = `
-            <div class="error-header">
-                <h3>❌ Generation Failed</h3>
-                <span class="error-type">${result.errorType || 'Unknown'}</span>
-            </div>
-            <div class="error-message">${result.error}</div>
-            ${result.suggestions && result.suggestions.length > 0 ? `
-                <div class="error-suggestions">
-                    <h4>💡 Suggestions:</h4>
-                    <ul>
-                        ${result.suggestions.map(s => `<li>${s}</li>`).join('')}
-                    </ul>
-                </div>
-            ` : ''}
-            ${result.canRetry ? `
-                <div class="error-actions">
-                    <button onclick="app.retryGeneration()" class="btn btn-secondary">🔄 Try Again</button>
-                </div>
-            ` : ''}
-            ${result.technical ? `
-                <details class="error-technical">
-                    <summary>Technical Details</summary>
-                    <pre>${result.technical}</pre>
-                </details>
-            ` : ''}
-        `;
-        
+
+        // Build error display safely using DOM methods to prevent XSS
+        const errorHeader = document.createElement('div');
+        errorHeader.className = 'error-header';
+
+        const headerTitle = document.createElement('h3');
+        headerTitle.textContent = '❌ Generation Failed';
+        errorHeader.appendChild(headerTitle);
+
+        const errorType = document.createElement('span');
+        errorType.className = 'error-type';
+        errorType.textContent = result.errorType || 'Unknown';
+        errorHeader.appendChild(errorType);
+
+        errorDiv.appendChild(errorHeader);
+
+        const errorMessage = document.createElement('div');
+        errorMessage.className = 'error-message';
+        errorMessage.textContent = result.error || 'An unknown error occurred';
+        errorDiv.appendChild(errorMessage);
+
+        // Add suggestions if present
+        if (result.suggestions && result.suggestions.length > 0) {
+            const suggestionsDiv = document.createElement('div');
+            suggestionsDiv.className = 'error-suggestions';
+
+            const suggestionsTitle = document.createElement('h4');
+            suggestionsTitle.textContent = '💡 Suggestions:';
+            suggestionsDiv.appendChild(suggestionsTitle);
+
+            const suggestionsList = document.createElement('ul');
+            result.suggestions.forEach(suggestion => {
+                const li = document.createElement('li');
+                li.textContent = suggestion;
+                suggestionsList.appendChild(li);
+            });
+            suggestionsDiv.appendChild(suggestionsList);
+            errorDiv.appendChild(suggestionsDiv);
+        }
+
+        // Add retry button if applicable
+        if (result.canRetry) {
+            const actionsDiv = document.createElement('div');
+            actionsDiv.className = 'error-actions';
+
+            const retryBtn = document.createElement('button');
+            retryBtn.className = 'btn btn-secondary';
+            retryBtn.textContent = '🔄 Try Again';
+            retryBtn.addEventListener('click', () => this.retryGeneration());
+            actionsDiv.appendChild(retryBtn);
+
+            errorDiv.appendChild(actionsDiv);
+        }
+
+        // Add technical details if present
+        if (result.technical) {
+            const technicalDetails = document.createElement('details');
+            technicalDetails.className = 'error-technical';
+
+            const summary = document.createElement('summary');
+            summary.textContent = 'Technical Details';
+            technicalDetails.appendChild(summary);
+
+            const pre = document.createElement('pre');
+            pre.textContent = result.technical;
+            technicalDetails.appendChild(pre);
+
+            errorDiv.appendChild(technicalDetails);
+        }
+
         document.querySelector('.container').appendChild(errorDiv);
-        
+
         // Auto-remove after 10 seconds
         setTimeout(() => {
             if (errorDiv.parentNode) {
@@ -423,36 +510,161 @@ class DynamicAppRenderer {
     addFeedbackOptions() {
         // Add feedback buttons to code display
         const codeActions = document.querySelector('.code-actions');
-        
+
         // Remove existing feedback buttons
         const existingFeedback = codeActions.querySelector('.feedback-buttons');
         if (existingFeedback) {
             existingFeedback.remove();
         }
-        
+
         const feedbackDiv = document.createElement('div');
         feedbackDiv.className = 'feedback-buttons';
-        feedbackDiv.innerHTML = `
-            <button onclick="app.improveFeedback()" class="btn btn-outline" title="Request improvements">
-                🔧 Improve
-            </button>
-            <button onclick="app.rateFeedback('good')" class="btn btn-outline" title="Good result">
-                👍
-            </button>
-            <button onclick="app.rateFeedback('bad')" class="btn btn-outline" title="Poor result">
-                👎
-            </button>
-        `;
+
+        // Create buttons using DOM methods instead of innerHTML to avoid XSS risks
+        const improveBtn = document.createElement('button');
+        improveBtn.className = 'btn btn-outline';
+        improveBtn.title = 'Request improvements';
+        improveBtn.textContent = '🔧 Improve';
+        improveBtn.addEventListener('click', () => this.improveFeedback());
+        feedbackDiv.appendChild(improveBtn);
+
+        const goodBtn = document.createElement('button');
+        goodBtn.className = 'btn btn-outline';
+        goodBtn.title = 'Good result';
+        goodBtn.textContent = '👍';
+        goodBtn.addEventListener('click', () => this.rateFeedback('good'));
+        feedbackDiv.appendChild(goodBtn);
+
+        const badBtn = document.createElement('button');
+        badBtn.className = 'btn btn-outline';
+        badBtn.title = 'Poor result';
+        badBtn.textContent = '👎';
+        badBtn.addEventListener('click', () => this.rateFeedback('bad'));
+        feedbackDiv.appendChild(badBtn);
+
         codeActions.appendChild(feedbackDiv);
     }
 
     async improveFeedback() {
-        const improvement = prompt('What would you like to improve about this code?');
-        if (improvement) {
-            const improvedPrompt = `${this.promptInput.value}\n\nIMPROVEMENT REQUEST: ${improvement}`;
-            this.promptInput.value = improvedPrompt;
-            await this.handleGenerateCode();
+        // Create a custom modal dialog since prompt() is not supported in Electron
+        const modal = document.createElement('div');
+        modal.className = 'improvement-modal';
+        modal.innerHTML = `
+            <div class="improvement-dialog">
+                <h3>🔧 Improve Code</h3>
+                <p>What would you like to improve about this code?</p>
+                <textarea id="improvement-input" rows="4" placeholder="Describe the improvements you want..."></textarea>
+                <div class="improvement-actions">
+                    <button class="btn btn-secondary" id="cancel-improvement">Cancel</button>
+                    <button class="btn btn-primary" id="submit-improvement">Improve</button>
+                </div>
+            </div>
+        `;
+
+        // Add modal styles if not already present
+        if (!document.getElementById('improvement-modal-styles')) {
+            const styles = document.createElement('style');
+            styles.id = 'improvement-modal-styles';
+            styles.textContent = `
+                .improvement-modal {
+                    position: fixed;
+                    top: 0;
+                    left: 0;
+                    right: 0;
+                    bottom: 0;
+                    background: rgba(0, 0, 0, 0.5);
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    z-index: 10000;
+                }
+                .improvement-dialog {
+                    background: var(--card-bg, #fff);
+                    padding: 24px;
+                    border-radius: 12px;
+                    max-width: 500px;
+                    width: 90%;
+                    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+                }
+                .improvement-dialog h3 {
+                    margin: 0 0 12px 0;
+                    color: var(--text-primary, #333);
+                }
+                .improvement-dialog p {
+                    margin: 0 0 16px 0;
+                    color: var(--text-secondary, #666);
+                }
+                .improvement-dialog textarea {
+                    width: 100%;
+                    padding: 12px;
+                    border: 1px solid var(--border-color, #ddd);
+                    border-radius: 8px;
+                    resize: vertical;
+                    font-family: inherit;
+                    font-size: 14px;
+                    background: var(--input-bg, #fff);
+                    color: var(--text-primary, #333);
+                }
+                .improvement-dialog textarea:focus {
+                    outline: none;
+                    border-color: var(--accent-color, #4f46e5);
+                }
+                .improvement-actions {
+                    display: flex;
+                    gap: 12px;
+                    justify-content: flex-end;
+                    margin-top: 16px;
+                }
+            `;
+            document.head.appendChild(styles);
         }
+
+        document.body.appendChild(modal);
+
+        const input = modal.querySelector('#improvement-input');
+        input.focus();
+
+        return new Promise((resolve) => {
+            const cleanup = () => {
+                modal.remove();
+            };
+
+            modal.querySelector('#cancel-improvement').addEventListener('click', () => {
+                cleanup();
+                resolve();
+            });
+
+            modal.querySelector('#submit-improvement').addEventListener('click', async () => {
+                const improvement = input.value.trim();
+                cleanup();
+                if (improvement) {
+                    const improvedPrompt = `${this.promptInput.value}\n\nIMPROVEMENT REQUEST: ${improvement}`;
+                    this.promptInput.value = improvedPrompt;
+                    await this.handleGenerateCode();
+                }
+                resolve();
+            });
+
+            // Allow pressing Enter to submit (Shift+Enter for newline)
+            input.addEventListener('keydown', async (e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    modal.querySelector('#submit-improvement').click();
+                }
+                if (e.key === 'Escape') {
+                    cleanup();
+                    resolve();
+                }
+            });
+
+            // Click outside to close
+            modal.addEventListener('click', (e) => {
+                if (e.target === modal) {
+                    cleanup();
+                    resolve();
+                }
+            });
+        });
     }
 
     async rateFeedback(rating) {
@@ -564,6 +776,151 @@ class DynamicAppRenderer {
         this.showNotification('New session started', 'info');
     }
 
+    /**
+     * Load a pre-defined template into the prompt input
+     */
+    loadTemplate(templateType) {
+        const templates = {
+            'todo': 'Create a complete todo list application with the following features:\n- Add new tasks with a text input and button\n- Mark tasks as complete/incomplete with a toggle button\n- Delete tasks\n- Display all tasks in a clean list\n- Store all data in a database using window.electronAPI\n- Show task count\n- Add timestamps for when tasks were created\n- Make it look modern and clean with good CSS styling',
+
+            'notes': 'Build a note-taking application with these features:\n- Create new notes with title and content\n- Display all notes as cards or list items\n- Edit existing notes\n- Delete notes\n- Search/filter notes by title\n- Store everything in database using window.electronAPI\n- Add timestamps (created_at, updated_at)\n- Use modern, clean design with good typography',
+
+            'contacts': 'Create a contact manager application that includes:\n- Add new contacts (name, email, phone, address)\n- Display all contacts in a searchable list\n- Edit contact information\n- Delete contacts\n- Search contacts by name or email\n- Store all data in database using window.electronAPI\n- Validate email and phone formats\n- Modern card-based or table layout',
+
+            'expenses': 'Build an expense tracker with:\n- Add expenses (amount, category, description, date)\n- Display all expenses in a table\n- Calculate total expenses\n- Filter by date range or category\n- Edit and delete expenses\n- Show expense breakdown by category\n- Store in database using window.electronAPI\n- Add data visualization if possible\n- Clean, professional design',
+
+            'inventory': 'Create an inventory management system:\n- Add items (name, quantity, price, SKU/code)\n- Display all items in a table\n- Update quantities (add/subtract stock)\n- Search items by name or SKU\n- Delete items\n- Show total inventory value\n- Store in database using window.electronAPI\n- Alert when stock is low\n- Professional business-style UI',
+
+            'diary': 'Build a diary/journal application with:\n- Write new diary entries (title, content, mood/tags)\n- Display entries sorted by date (newest first)\n- Edit previous entries\n- Delete entries\n- Search entries by content or date\n- Store in database using window.electronAPI\n- Add timestamps automatically\n- Beautiful, calm design suitable for journaling'
+        };
+
+        if (templates[templateType]) {
+            this.promptInput.value = templates[templateType];
+            this.showNotification(`Loaded ${templateType} template!`, 'success');
+            // Scroll to the prompt
+            this.promptInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            this.promptInput.focus();
+        }
+    }
+
+    /**
+     * Toggle the database context sidebar
+     */
+    toggleDbContextSidebar() {
+        const sidebar = document.getElementById('dbContextSidebar');
+        if (sidebar) {
+            sidebar.classList.toggle('open');
+            if (sidebar.classList.contains('open')) {
+                this.refreshDbContext();
+            }
+        }
+    }
+
+    /**
+     * Close the database context sidebar
+     */
+    closeDbContextSidebar() {
+        const sidebar = document.getElementById('dbContextSidebar');
+        if (sidebar) {
+            sidebar.classList.remove('open');
+        }
+    }
+
+    /**
+     * Refresh the database context information
+     */
+    async refreshDbContext() {
+        try {
+            const currentDbName = document.getElementById('currentDbName');
+            const tablesPreviewList = document.getElementById('tablesPreviewList');
+
+            if (!this.currentSession) {
+                currentDbName.textContent = 'No active session';
+                tablesPreviewList.innerHTML = '<p class="no-data">Start a session to see database tables</p>';
+                return;
+            }
+
+            // Set current database name (use session ID as DB name)
+            currentDbName.textContent = this.currentSession;
+
+            // Fetch tables for current session/database
+            const result = await window.electronAPI.dbListTables(this.currentSession);
+
+            if (result.success && result.tables && result.tables.length > 0) {
+                tablesPreviewList.innerHTML = '';
+
+                for (const tableName of result.tables) {
+                    // Skip internal tables
+                    if (tableName === '_init_table') continue;
+
+                    // Get table schema
+                    let columns = [];
+                    try {
+                        const schemaResult = await window.electronAPI.dbGetTableSchema(this.currentSession, tableName);
+                        if (schemaResult.success && schemaResult.columns) {
+                            columns = schemaResult.columns;
+                        }
+                    } catch (e) {
+                        console.warn('Could not fetch schema for', tableName);
+                    }
+
+                    // Build table item using DOM methods to prevent XSS
+                    const tableItem = document.createElement('div');
+                    tableItem.className = 'table-preview-item';
+
+                    const tableNameEl = document.createElement('strong');
+                    tableNameEl.textContent = tableName;
+                    tableItem.appendChild(tableNameEl);
+
+                    const columnsDiv = document.createElement('div');
+                    columnsDiv.className = 'table-columns';
+                    if (columns.length > 0) {
+                        columnsDiv.textContent = columns.map(col => `${col.name} (${col.type})`).join(', ');
+                    } else {
+                        columnsDiv.textContent = 'No schema info';
+                    }
+                    tableItem.appendChild(columnsDiv);
+
+                    // Click to insert table reference into prompt
+                    tableItem.addEventListener('click', () => {
+                        this.insertTableReference(tableName);
+                    });
+
+                    tablesPreviewList.appendChild(tableItem);
+                }
+
+                this.showNotification(`Found ${result.tables.length - 1} tables`, 'success');
+            } else {
+                const noDataP = document.createElement('p');
+                noDataP.className = 'no-data';
+                noDataP.textContent = 'No tables yet. Create one in your code!';
+                tablesPreviewList.innerHTML = '';
+                tablesPreviewList.appendChild(noDataP);
+            }
+        } catch (error) {
+            console.error('Error refreshing DB context:', error);
+            const errorP = document.createElement('p');
+            errorP.className = 'no-data';
+            errorP.textContent = 'Error loading tables';
+            const tablesListEl = document.getElementById('tablesPreviewList');
+            tablesListEl.innerHTML = '';
+            tablesListEl.appendChild(errorP);
+        }
+    }
+
+    /**
+     * Insert a table reference into the prompt
+     */
+    insertTableReference(tableName) {
+        const currentValue = this.promptInput.value;
+        const addition = `\n\nUse the existing "${tableName}" table in the database.`;
+
+        this.promptInput.value = currentValue + addition;
+        this.closeDbContextSidebar();
+        this.showNotification(`Added reference to ${tableName}`, 'info');
+        this.promptInput.focus();
+    }
+
     async executeSecureDOMCode(code) {
         try {
             // First, notify main process for logging
@@ -572,16 +929,25 @@ class DynamicAppRenderer {
                 sessionId: this.currentSession
             });
 
+            // Clear execution-root before new execution to prevent UI pollution
+            const executionRoot = document.getElementById('execution-root');
+            if (executionRoot) {
+                executionRoot.innerHTML = '';
+            }
+
+            // Wrap code to confine it to execution-root
+            const confinedCode = this.wrapCodeForConfinement(code);
+
             // Use secure DOM executor if available
             if (this.secureDOMExecutor) {
                 return await this.secureDOMExecutor.executeInCurrentContext(
-                    code, 
+                    confinedCode,
                     this.currentSession,
-                    document.getElementById('execution-root')
+                    executionRoot
                 );
             } else {
                 // Fallback to function-based execution (safer than eval)
-                return await this.executeFunctionBased(code);
+                return await this.executeFunctionBased(confinedCode);
             }
         } catch (error) {
             window.rendererLogger.error('Secure DOM execution failed:', error);
@@ -593,9 +959,179 @@ class DynamicAppRenderer {
         }
     }
 
+    /**
+     * Wrap generated code to confine it to execution-root container
+     * This prevents generated code from modifying the rest of the UI
+     */
+    wrapCodeForConfinement(code) {
+        // Replace global document references with confined scope
+        // This ensures generated code only modifies #execution-root
+
+        const confinementWrapper = `
+// === CONFINEMENT WRAPPER - DO NOT MODIFY ===
+(function() {
+    // Get the execution root container
+    const __executionRoot = document.getElementById('execution-root');
+    if (!__executionRoot) {
+        console.error('execution-root not found');
+        return;
+    }
+
+    // Create confined document-like object
+    const __confinedDoc = {
+        getElementById: function(id) {
+            // Allow getting execution-root itself
+            if (id === 'execution-root') return __executionRoot;
+            // Search only within execution-root
+            return __executionRoot.querySelector('#' + id);
+        },
+        querySelector: function(selector) {
+            if (selector === '#execution-root') return __executionRoot;
+            return __executionRoot.querySelector(selector);
+        },
+        querySelectorAll: function(selector) {
+            return __executionRoot.querySelectorAll(selector);
+        },
+        createElement: function(tag) {
+            return document.createElement(tag);
+        },
+        createTextNode: function(text) {
+            return document.createTextNode(text);
+        },
+        createDocumentFragment: function() {
+            return document.createDocumentFragment();
+        },
+        // Redirect body to execution-root
+        get body() {
+            return __executionRoot;
+        }
+    };
+
+    // Override document methods in the execution scope
+    const originalGetElementById = document.getElementById.bind(document);
+    const originalQuerySelector = document.querySelector.bind(document);
+    const originalQuerySelectorAll = document.querySelectorAll.bind(document);
+
+    // Create a proxy for document that confines most operations
+    const confinedDocument = new Proxy(document, {
+        get: function(target, prop) {
+            // Confine these methods to execution-root
+            if (prop === 'getElementById') {
+                return function(id) {
+                    if (id === 'execution-root') return __executionRoot;
+                    // First check execution-root, then fall back to real document for system IDs
+                    const inRoot = __executionRoot.querySelector('#' + CSS.escape(id));
+                    if (inRoot) return inRoot;
+                    // Block access to non-execution-root elements
+                    const realElement = originalGetElementById(id);
+                    if (realElement && !__executionRoot.contains(realElement) && id !== 'execution-root') {
+                        console.warn('Access to element outside execution-root blocked:', id);
+                        return null;
+                    }
+                    return realElement;
+                };
+            }
+            if (prop === 'querySelector') {
+                return function(selector) {
+                    if (selector === '#execution-root' || selector === 'body') return __executionRoot;
+                    return __executionRoot.querySelector(selector);
+                };
+            }
+            if (prop === 'querySelectorAll') {
+                return function(selector) {
+                    return __executionRoot.querySelectorAll(selector);
+                };
+            }
+            if (prop === 'body') {
+                return __executionRoot;
+            }
+            // Allow createElement and other safe methods
+            if (prop === 'createElement' || prop === 'createTextNode' || prop === 'createDocumentFragment') {
+                return target[prop].bind(target);
+            }
+            // Pass through addEventListener for DOMContentLoaded etc
+            if (prop === 'addEventListener') {
+                return function(event, handler, options) {
+                    if (event === 'DOMContentLoaded') {
+                        // Execute immediately since DOM is already loaded
+                        setTimeout(handler, 0);
+                    } else {
+                        __executionRoot.addEventListener(event, handler, options);
+                    }
+                };
+            }
+            // Block dangerous methods
+            if (prop === 'write' || prop === 'writeln' || prop === 'open' || prop === 'close') {
+                return function() { console.warn('document.' + prop + ' is blocked'); };
+            }
+            // Return other properties as-is
+            return typeof target[prop] === 'function' ? target[prop].bind(target) : target[prop];
+        }
+    });
+
+    // Execute the user code with confined document
+    // Note: Don't pass 'root' as parameter to avoid shadowing user's 'const root' declarations
+    (function(document) {
+        // === USER CODE STARTS HERE ===
+${code}
+        // === USER CODE ENDS HERE ===
+    })(confinedDocument);
+})();
+`;
+        return confinementWrapper;
+    }
+
+    /**
+     * Check code for dangerous patterns before execution
+     * Returns null if safe, or error message if dangerous
+     */
+    scanCodeForDangers(code) {
+        const dangerousPatterns = [
+            { pattern: /eval\s*\(/i, description: 'eval() is not allowed' },
+            { pattern: /Function\s*\(/i, description: 'Function constructor is not allowed' },
+            { pattern: /\.innerHTML\s*=\s*[^'"`;\n]+\s*\+\s*['"][^'"]*</i, description: 'Dynamic innerHTML with string concatenation of HTML is risky' },
+            { pattern: /document\.write\s*\(/i, description: 'document.write() is not allowed' },
+            { pattern: /window\.location\s*=/i, description: 'Modifying window.location is not allowed' },
+            { pattern: /document\.cookie/i, description: 'Accessing cookies is not allowed' },
+            { pattern: /localStorage\./i, description: 'localStorage access is not allowed in fallback mode' },
+            { pattern: /sessionStorage\./i, description: 'sessionStorage access is not allowed in fallback mode' },
+            { pattern: /fetch\s*\(/i, description: 'Network requests are not allowed in fallback mode' },
+            { pattern: /XMLHttpRequest/i, description: 'Network requests are not allowed in fallback mode' },
+            { pattern: /import\s*\(/i, description: 'Dynamic imports are not allowed' },
+            { pattern: /require\s*\(/i, description: 'require() is not allowed' }
+        ];
+
+        for (const { pattern, description } of dangerousPatterns) {
+            if (pattern.test(code)) {
+                return description;
+            }
+        }
+
+        // Check code size limit
+        if (code.length > 100000) {
+            return 'Code exceeds maximum allowed size (100KB)';
+        }
+
+        return null;
+    }
+
     async executeFunctionBased(code) {
         const logs = [];
         const startTime = Date.now();
+
+        // Security: Warn that this is fallback execution mode
+        window.rendererLogger.warn('Using fallback execution mode (new Function). SecureDOMExecutor preferred.');
+
+        // Security scan before execution
+        const securityIssue = this.scanCodeForDangers(code);
+        if (securityIssue) {
+            return {
+                success: false,
+                error: `Security check failed: ${securityIssue}`,
+                logs: [],
+                executionTime: 0
+            };
+        }
 
         try {
             // Create safe execution environment
@@ -619,6 +1155,7 @@ class DynamicAppRenderer {
             };
 
             // Create execution function with restricted scope
+            // Note: This is a fallback when SecureDOMExecutor is unavailable
             const executionFunction = new Function(
                 'document',
                 'window',
@@ -754,9 +1291,281 @@ class DynamicAppRenderer {
         this.databaseManager.style.display = 'none';
         this.schemaGenerator.style.display = 'block';
         this.queryBuilder.style.display = 'none';
-        
+
+        const visualDesigner = document.getElementById('visualSchemaDesigner');
+        if (visualDesigner) visualDesigner.style.display = 'none';
+
         this.showDbManagerBtn.classList.remove('active');
-        this.showSchemaGeneratorBtn.classList.add('active');
+        this.showSchemaGeneratorBtn.classList.remove('active');
+        const showVisualDesignerBtn = document.getElementById('showVisualDesignerBtn');
+        if (showVisualDesignerBtn) showVisualDesignerBtn.classList.remove('active');
+    }
+
+    /**
+     * Show visual schema designer subsection
+     */
+    showVisualDesigner() {
+        this.databaseManager.style.display = 'none';
+        this.schemaGenerator.style.display = 'none';
+        this.queryBuilder.style.display = 'none';
+
+        const visualDesigner = document.getElementById('visualSchemaDesigner');
+        if (visualDesigner) visualDesigner.style.display = 'block';
+
+        this.showDbManagerBtn.classList.remove('active');
+        this.showSchemaGeneratorBtn.classList.remove('active');
+        const showVisualDesignerBtn = document.getElementById('showVisualDesignerBtn');
+        if (showVisualDesignerBtn) showVisualDesignerBtn.classList.add('active');
+
+        // Initialize with one column row if empty
+        const columnsContainer = document.getElementById('columnsContainer');
+        if (columnsContainer && columnsContainer.children.length === 0) {
+            this.addColumnRow();
+        }
+    }
+
+    /**
+     * Add a column row to the visual designer
+     */
+    addColumnRow() {
+        const columnsContainer = document.getElementById('columnsContainer');
+        if (!columnsContainer) return;
+
+        const columnRow = document.createElement('div');
+        columnRow.className = 'column-row';
+        columnRow.innerHTML = `
+            <input type="text" placeholder="Column name" class="column-name">
+            <select class="column-type">
+                <option value="TEXT">TEXT</option>
+                <option value="INTEGER">INTEGER</option>
+                <option value="REAL">REAL</option>
+                <option value="BLOB">BLOB</option>
+            </select>
+            <label>
+                <input type="checkbox" class="column-required"> Required
+            </label>
+            <button class="remove-column-btn" onclick="this.parentElement.remove(); window.app.updateSchemaPreview();">×</button>
+        `;
+
+        // Add input listeners to update preview
+        const inputs = columnRow.querySelectorAll('input, select');
+        inputs.forEach(input => {
+            input.addEventListener('input', () => this.updateSchemaPreview());
+            input.addEventListener('change', () => this.updateSchemaPreview());
+        });
+
+        columnsContainer.appendChild(columnRow);
+        this.updateSchemaPreview();
+    }
+
+    /**
+     * Update the schema preview
+     */
+    updateSchemaPreview() {
+        const tableName = document.getElementById('designerTableName')?.value || 'table_name';
+        const columnsContainer = document.getElementById('columnsContainer');
+        const schemaPreview = document.getElementById('schemaPreview');
+
+        if (!columnsContainer || !schemaPreview) return;
+
+        const columns = [];
+        const columnRows = columnsContainer.querySelectorAll('.column-row');
+
+        columnRows.forEach(row => {
+            const name = row.querySelector('.column-name').value;
+            const type = row.querySelector('.column-type').value;
+            const required = row.querySelector('.column-required').checked;
+
+            if (name) {
+                columns.push({ name, type, required });
+            }
+        });
+
+        if (columns.length === 0) {
+            schemaPreview.innerHTML = '<p class="no-data">Add columns to see preview</p>';
+            return;
+        }
+
+        // Generate preview code
+        const code = `await window.electronAPI.createTable('${tableName}', {
+  columns: [
+    { name: 'id', type: 'INTEGER', primaryKey: true, autoIncrement: true },
+${columns.map(col => `    { name: '${col.name}', type: '${col.type}'${col.required ? ', required: true' : ''} }`).join(',\n')}
+  ]
+});`;
+
+        schemaPreview.textContent = code;
+    }
+
+    /**
+     * Generate schema code and copy to prompt
+     */
+    generateSchemaCode() {
+        const tableName = document.getElementById('designerTableName')?.value;
+        if (!tableName) {
+            this.showNotification('Please enter a table name', 'error');
+            return;
+        }
+
+        this.updateSchemaPreview();
+        const code = document.getElementById('schemaPreview')?.textContent;
+
+        if (code && !code.includes('Add columns')) {
+            this.promptInput.value = `Create an app that uses this database table:\n\n${code}\n\nBuild a complete UI to manage this data with add, edit, delete, and view functionality.`;
+            this.showNotification('Schema code added to prompt!', 'success');
+            this.promptInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+    }
+
+    /**
+     * Create table directly from visual designer
+     */
+    async createTableFromDesign() {
+        const tableName = document.getElementById('designerTableName')?.value;
+        if (!tableName) {
+            this.showNotification('Please enter a table name', 'error');
+            return;
+        }
+
+        if (!this.currentSession) {
+            this.showNotification('Please start a session first', 'error');
+            return;
+        }
+
+        const columnsContainer = document.getElementById('columnsContainer');
+        const columnRows = columnsContainer.querySelectorAll('.column-row');
+
+        if (columnRows.length === 0) {
+            this.showNotification('Please add at least one column', 'error');
+            return;
+        }
+
+        const columns = [
+            { name: 'id', type: 'INTEGER', primaryKey: true, autoIncrement: true }
+        ];
+
+        columnRows.forEach(row => {
+            const name = row.querySelector('.column-name').value;
+            const type = row.querySelector('.column-type').value;
+            const required = row.querySelector('.column-required').checked;
+
+            if (name) {
+                columns.push({ name, type, required });
+            }
+        });
+
+        try {
+            const result = await window.electronAPI.dbCreateTable(this.currentSession, tableName, { columns });
+
+            if (result.success) {
+                this.showNotification(`Table "${tableName}" created successfully!`, 'success');
+                this.clearDesigner();
+                this.refreshDbContext();
+            } else {
+                this.showNotification(`Failed to create table: ${result.error}`, 'error');
+            }
+        } catch (error) {
+            this.showNotification(`Error: ${error.message}`, 'error');
+        }
+    }
+
+    /**
+     * Clear the visual designer
+     */
+    clearDesigner() {
+        document.getElementById('designerTableName').value = '';
+        document.getElementById('columnsContainer').innerHTML = '';
+        document.getElementById('schemaPreview').innerHTML = '<p class="no-data">Add columns to see preview</p>';
+        this.addColumnRow();
+    }
+
+    /**
+     * Generate UI for an existing table
+     */
+    async generateUIForTable(tableName) {
+        try {
+            if (!this.currentDatabase) {
+                this.showNotification('No database selected', 'error');
+                return;
+            }
+
+            // Get table schema
+            const schemaResult = await window.electronAPI.dbGetTableSchema(this.currentDatabase, tableName);
+
+            if (!schemaResult.success || !schemaResult.columns) {
+                this.showNotification('Failed to load table schema', 'error');
+                return;
+            }
+
+            const columns = schemaResult.columns;
+
+            // Get sample data to understand the table better
+            let sampleData = [];
+            try {
+                const dataResult = await window.electronAPI.dbQueryData(this.currentDatabase, tableName, { limit: 3 });
+                if (dataResult.success && dataResult.data) {
+                    sampleData = dataResult.data;
+                }
+            } catch (e) {
+                console.warn('Could not fetch sample data');
+            }
+
+            // Build detailed prompt
+            let prompt = `Create a complete, production-ready UI application for managing the "${tableName}" database table.\n\n`;
+
+            prompt += `TABLE SCHEMA:\n`;
+            prompt += `Table: ${tableName}\n`;
+            prompt += `Columns:\n`;
+            columns.forEach(col => {
+                prompt += `  - ${col.name} (${col.type})${col.primaryKey ? ' [PRIMARY KEY]' : ''}${col.required ? ' [REQUIRED]' : ''}\n`;
+            });
+
+            if (sampleData.length > 0) {
+                prompt += `\nSAMPLE DATA (${sampleData.length} records):\n`;
+                prompt += JSON.stringify(sampleData, null, 2) + '\n';
+            }
+
+            prompt += `\nREQUIREMENTS:\n`;
+            prompt += `1. Create a complete CRUD interface (Create, Read, Update, Delete)\n`;
+            prompt += `2. Display all records from the "${tableName}" table in a beautiful, modern layout\n`;
+            prompt += `3. Add a form to create new records with all fields\n`;
+            prompt += `4. Enable editing of existing records (click to edit)\n`;
+            prompt += `5. Add delete functionality with confirmation\n`;
+            prompt += `6. Include search/filter capability\n`;
+            prompt += `7. Show total record count\n`;
+            prompt += `8. Add proper validation for all fields\n`;
+            prompt += `9. Use the existing "${tableName}" table (DO NOT create a new table)\n`;
+            prompt += `10. Include error handling and user feedback\n`;
+            prompt += `11. Make it responsive and visually appealing with modern CSS\n`;
+            prompt += `12. Add loading states for async operations\n\n`;
+
+            prompt += `IMPORTANT:\n`;
+            prompt += `- Use await window.electronAPI.queryData('${tableName}', ...) to load existing data\n`;
+            prompt += `- Use await window.electronAPI.insertData('${tableName}', {...}) to create records\n`;
+            prompt += `- Use await window.electronAPI.updateData('${tableName}', {id: X}, {...}) to update\n`;
+            prompt += `- Use await window.electronAPI.deleteData('${tableName}', {id: X}) to delete\n`;
+            prompt += `- Handle all database operations with proper try-catch and result.success checking\n\n`;
+
+            prompt += `Make it beautiful, functional, and user-friendly!`;
+
+            // Set the prompt
+            this.promptInput.value = prompt;
+
+            // Scroll to the prompt
+            this.codeGeneration.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            this.promptInput.focus();
+
+            // Show notification
+            this.showNotification(`Generated UI prompt for "${tableName}". Click Generate Code!`, 'success');
+
+            // Optional: Auto-trigger code generation
+            // Uncomment the next line to automatically generate code
+            // await this.handleGenerateCode();
+
+        } catch (error) {
+            console.error('Error generating UI for table:', error);
+            this.showNotification(`Error: ${error.message}`, 'error');
+        }
     }
 
     /**
@@ -849,24 +1658,52 @@ class DynamicAppRenderer {
     async loadTables() {
         try {
             const result = await window.electronAPI.dbListTables(this.currentDatabase);
-            
+
             if (result.success) {
                 this.tablesList.innerHTML = '';
-                
+
                 if (result.tables.length === 0) {
-                    this.tablesList.innerHTML = '<p class="no-data">No tables in this database</p>';
+                    const noDataP = document.createElement('p');
+                    noDataP.className = 'no-data';
+                    noDataP.textContent = 'No tables in this database';
+                    this.tablesList.appendChild(noDataP);
                 } else {
                     result.tables.forEach(tableName => {
                         if (tableName !== '_init_table') { // Hide init table
+                            // Build table item using DOM methods to prevent XSS
                             const tableItem = document.createElement('div');
                             tableItem.className = 'table-item';
-                            tableItem.innerHTML = `
-                                <span class="table-name">${tableName}</span>
-                                <div class="table-actions">
-                                    <button onclick="app.selectTable('${tableName}')" class="btn btn-sm">View Data</button>
-                                    <button onclick="app.showTableSchema('${tableName}')" class="btn btn-sm btn-outline">Schema</button>
-                                </div>
-                            `;
+
+                            const tableNameSpan = document.createElement('span');
+                            tableNameSpan.className = 'table-name';
+                            tableNameSpan.textContent = tableName;
+                            tableItem.appendChild(tableNameSpan);
+
+                            const actionsDiv = document.createElement('div');
+                            actionsDiv.className = 'table-actions';
+
+                            // View Data button
+                            const viewBtn = document.createElement('button');
+                            viewBtn.className = 'btn btn-sm';
+                            viewBtn.textContent = 'View Data';
+                            viewBtn.addEventListener('click', () => this.selectTable(tableName));
+                            actionsDiv.appendChild(viewBtn);
+
+                            // Schema button
+                            const schemaBtn = document.createElement('button');
+                            schemaBtn.className = 'btn btn-sm btn-outline';
+                            schemaBtn.textContent = 'Schema';
+                            schemaBtn.addEventListener('click', () => this.showTableSchema(tableName));
+                            actionsDiv.appendChild(schemaBtn);
+
+                            // Generate UI button
+                            const generateBtn = document.createElement('button');
+                            generateBtn.className = 'btn btn-sm btn-success';
+                            generateBtn.textContent = '🎨 Generate UI';
+                            generateBtn.addEventListener('click', () => this.generateUIForTable(tableName));
+                            actionsDiv.appendChild(generateBtn);
+
+                            tableItem.appendChild(actionsDiv);
                             this.tablesList.appendChild(tableItem);
                         }
                     });
@@ -933,76 +1770,141 @@ class DynamicAppRenderer {
     }
 
     /**
-     * Render data table
+     * Escape HTML to prevent XSS
+     */
+    escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    /**
+     * Render data table safely using DOM methods to prevent XSS
      */
     renderDataTable(data) {
+        // Clear existing content
+        this.dataTable.innerHTML = '';
+
         if (!data || data.length === 0) {
-            this.dataTable.innerHTML = '<p class="no-data">No data in this table</p>';
+            const noData = document.createElement('p');
+            noData.className = 'no-data';
+            noData.textContent = 'No data in this table';
+            this.dataTable.appendChild(noData);
             return;
         }
 
         const columns = Object.keys(data[0]);
-        
-        let tableHTML = '<table class="data-table">';
-        
-        // Header
-        tableHTML += '<thead><tr>';
+
+        // Create table element
+        const table = document.createElement('table');
+        table.className = 'data-table';
+
+        // Create header
+        const thead = document.createElement('thead');
+        const headerRow = document.createElement('tr');
         columns.forEach(col => {
-            tableHTML += `<th>${col}</th>`;
+            const th = document.createElement('th');
+            th.textContent = col;
+            headerRow.appendChild(th);
         });
-        tableHTML += '<th>Actions</th></tr></thead>';
-        
-        // Body
-        tableHTML += '<tbody>';
+        const actionsHeader = document.createElement('th');
+        actionsHeader.textContent = 'Actions';
+        headerRow.appendChild(actionsHeader);
+        thead.appendChild(headerRow);
+        table.appendChild(thead);
+
+        // Create body
+        const tbody = document.createElement('tbody');
         data.forEach(row => {
-            tableHTML += '<tr>';
+            const tr = document.createElement('tr');
+
             columns.forEach(col => {
+                const td = document.createElement('td');
                 let value = row[col];
+
                 if (typeof value === 'object' && value !== null) {
                     value = JSON.stringify(value);
                 } else if (value === null) {
-                    value = '<em>null</em>';
+                    const em = document.createElement('em');
+                    em.textContent = 'null';
+                    td.appendChild(em);
+                    tr.appendChild(td);
+                    return;
                 }
-                tableHTML += `<td>${value}</td>`;
+
+                td.textContent = String(value);
+                tr.appendChild(td);
             });
-            tableHTML += `
-                <td class="actions">
-                    <button onclick="app.editRecord(${row.id})" class="btn btn-sm">Edit</button>
-                    <button onclick="app.deleteRecord(${row.id})" class="btn btn-sm btn-danger">Delete</button>
-                </td>
-            `;
-            tableHTML += '</tr>';
+
+            // Actions cell
+            const actionsTd = document.createElement('td');
+            actionsTd.className = 'actions';
+
+            const editBtn = document.createElement('button');
+            editBtn.className = 'btn btn-sm';
+            editBtn.textContent = 'Edit';
+            editBtn.addEventListener('click', () => this.editRecord(row.id));
+            actionsTd.appendChild(editBtn);
+
+            const deleteBtn = document.createElement('button');
+            deleteBtn.className = 'btn btn-sm btn-danger';
+            deleteBtn.textContent = 'Delete';
+            deleteBtn.addEventListener('click', () => this.deleteRecord(row.id));
+            actionsTd.appendChild(deleteBtn);
+
+            tr.appendChild(actionsTd);
+            tbody.appendChild(tr);
         });
-        tableHTML += '</tbody></table>';
-        
-        this.dataTable.innerHTML = tableHTML;
+
+        table.appendChild(tbody);
+        this.dataTable.appendChild(table);
     }
 
     /**
-     * Render pagination
+     * Render pagination safely using DOM methods
      */
     renderPagination(totalCount, currentPage, pageSize) {
-        const totalPages = Math.ceil(totalCount / pageSize);
-        
-        if (totalPages <= 1) {
-            this.dataPagination.innerHTML = '';
+        // Check if dataPagination element exists
+        if (!this.dataPagination) {
             return;
         }
-        
-        let paginationHTML = '<div class="pagination-info">';
-        paginationHTML += `Showing page ${currentPage} of ${totalPages} (${totalCount} total records)`;
-        paginationHTML += '</div><div class="pagination-controls">';
-        
+
+        const totalPages = Math.ceil(totalCount / pageSize);
+
+        // Clear existing content
+        this.dataPagination.innerHTML = '';
+
+        if (totalPages <= 1) {
+            return;
+        }
+
+        // Create pagination info
+        const paginationInfo = document.createElement('div');
+        paginationInfo.className = 'pagination-info';
+        paginationInfo.textContent = `Showing page ${currentPage} of ${totalPages} (${totalCount} total records)`;
+        this.dataPagination.appendChild(paginationInfo);
+
+        // Create pagination controls
+        const paginationControls = document.createElement('div');
+        paginationControls.className = 'pagination-controls';
+
         if (currentPage > 1) {
-            paginationHTML += `<button onclick="app.loadTableData(${currentPage - 1})" class="btn btn-sm">Previous</button>`;
+            const prevBtn = document.createElement('button');
+            prevBtn.className = 'btn btn-sm';
+            prevBtn.textContent = 'Previous';
+            prevBtn.addEventListener('click', () => this.loadTableData(currentPage - 1));
+            paginationControls.appendChild(prevBtn);
         }
-        
+
         if (currentPage < totalPages) {
-            paginationHTML += `<button onclick="app.loadTableData(${currentPage + 1})" class="btn btn-sm">Next</button>`;
+            const nextBtn = document.createElement('button');
+            nextBtn.className = 'btn btn-sm';
+            nextBtn.textContent = 'Next';
+            nextBtn.addEventListener('click', () => this.loadTableData(currentPage + 1));
+            paginationControls.appendChild(nextBtn);
         }
-        
-        paginationHTML += '</div>';
-        this.dataPagination.innerHTML = paginationHTML;
+
+        this.dataPagination.appendChild(paginationControls);
     }
 
     // Schema Generation Methods

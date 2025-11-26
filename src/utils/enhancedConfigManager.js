@@ -32,10 +32,13 @@ class EnhancedConfigurationManager extends EventEmitter {
         try {
             this.configPath = options.configPath || path.join(process.cwd(), 'config');
             this.secretsPath = options.secretsPath || path.join(this.configPath, 'secrets');
-            
+
+            // Pre-cache secret key asynchronously to avoid blocking on first use
+            await this.getSecretKeyAsync();
+
             // Create config directories
             await this.ensureDirectories();
-            
+
             // Setup default configurations
             this.setupDefaults();
             
@@ -128,7 +131,7 @@ class EnhancedConfigurationManager extends EventEmitter {
             api: {
                 anthropic: {
                     endpoint: 'https://api.anthropic.com',
-                    model: 'claude-3-opus-20240229',
+                    model: 'claude-opus-4-5-20251101',
                     maxTokens: 4096,
                     temperature: 0.7,
                     timeout: 30000,
@@ -1107,8 +1110,35 @@ class EnhancedConfigurationManager extends EventEmitter {
     }
 
     getSecretKey() {
+        // Cache the derived key to avoid repeated expensive scrypt operations
+        if (!this._cachedSecretKey) {
+            const masterKey = process.env.CONFIG_MASTER_KEY || 'default-master-key-change-in-production';
+            this._cachedSecretKey = crypto.scryptSync(masterKey, 'config-salt', 32);
+        }
+        return this._cachedSecretKey;
+    }
+
+    /**
+     * Async version of getSecretKey for use during initialization
+     * Uses crypto.scrypt instead of scryptSync
+     * @returns {Promise<Buffer>}
+     */
+    async getSecretKeyAsync() {
+        if (this._cachedSecretKey) {
+            return this._cachedSecretKey;
+        }
+
         const masterKey = process.env.CONFIG_MASTER_KEY || 'default-master-key-change-in-production';
-        return crypto.scryptSync(masterKey, 'config-salt', 32);
+        return new Promise((resolve, reject) => {
+            crypto.scrypt(masterKey, 'config-salt', 32, (err, key) => {
+                if (err) {
+                    reject(err);
+                } else {
+                    this._cachedSecretKey = key;
+                    resolve(key);
+                }
+            });
+        });
     }
 
     /**

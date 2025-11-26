@@ -869,9 +869,61 @@ class ErrorHandler extends EventEmitter {
         this.errorHandlers.clear();
         this.recoveryStrategies.clear();
         this.removeAllListeners();
-        
+
         return { success: true };
+    }
+
+    /**
+     * Standardized async operation handler for IPC and API calls
+     * Returns consistent { success, data?, error? } format
+     * @param {Function} operation - Async operation to execute
+     * @param {Object} options - Options for error handling
+     * @returns {Promise<{success: boolean, data?: any, error?: string}>}
+     */
+    async safeExecute(operation, options = {}) {
+        const { context = {}, logError = true, includeStack = false } = options;
+
+        try {
+            const result = await operation();
+            return { success: true, data: result };
+        } catch (error) {
+            if (logError) {
+                await this.handle(error, context);
+            }
+
+            const response = {
+                success: false,
+                error: error.message || 'An unexpected error occurred'
+            };
+
+            if (includeStack && process.env.NODE_ENV === 'development') {
+                response.stack = error.stack;
+            }
+
+            return response;
+        }
+    }
+
+    /**
+     * Standardized result formatter
+     * Ensures all API responses have consistent structure
+     * @param {boolean} success - Operation success status
+     * @param {any} data - Response data (for success)
+     * @param {string|Error} error - Error message or object (for failure)
+     * @returns {{success: boolean, data?: any, error?: string}}
+     */
+    formatResult(success, data = null, error = null) {
+        if (success) {
+            return data !== null ? { success: true, data } : { success: true };
+        }
+
+        const errorMessage = error instanceof Error ? error.message : error;
+        return { success: false, error: errorMessage || 'Unknown error' };
     }
 }
 
-module.exports = new ErrorHandler();
+// Export both instance and class for testability
+const instance = new ErrorHandler();
+module.exports = instance;
+module.exports.ErrorHandler = ErrorHandler;
+module.exports.getInstance = () => instance;

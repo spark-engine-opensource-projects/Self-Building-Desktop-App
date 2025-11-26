@@ -529,11 +529,19 @@ class AdvancedCache {
         this.cleanupInterval = setInterval(() => {
             this.cleanupExpired();
         }, 60000);
-        
+
         // Calculate efficiency every 5 minutes
         this.statsInterval = setInterval(() => {
             this.calculateEfficiency();
         }, 300000);
+
+        // Ensure timers don't prevent process exit
+        if (this.cleanupInterval.unref) {
+            this.cleanupInterval.unref();
+        }
+        if (this.statsInterval.unref) {
+            this.statsInterval.unref();
+        }
     }
     
     /**

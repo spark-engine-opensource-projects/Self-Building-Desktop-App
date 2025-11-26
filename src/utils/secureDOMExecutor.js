@@ -5,9 +5,47 @@ class SecureDOMExecutor {
     constructor() {
         this.activeIframes = new Map();
         this.executionId = 0;
-        
+
+        // Dangerous code patterns to block
+        this.dangerousPatterns = [
+            { pattern: /eval\s*\(/i, description: 'eval() is not allowed' },
+            { pattern: /Function\s*\(\s*['"]/i, description: 'Function constructor with string is not allowed' },
+            { pattern: /document\.write\s*\(/i, description: 'document.write() is not allowed' },
+            { pattern: /document\.cookie/i, description: 'Accessing cookies is not allowed' },
+            { pattern: /window\.location\s*=/i, description: 'Modifying window.location is not allowed' },
+            { pattern: /\.innerHTML\s*=\s*[^'"`;\n]+\s*\+\s*['"][^'"]*</i, description: 'Dynamic innerHTML with string concatenation of HTML is risky' },
+            { pattern: /importScripts\s*\(/i, description: 'importScripts() is not allowed' },
+            { pattern: /Worker\s*\(/i, description: 'Web Workers are not allowed' },
+            { pattern: /SharedArrayBuffer/i, description: 'SharedArrayBuffer is not allowed' }
+        ];
+
         // Start periodic cleanup to prevent memory leaks
         this.startPeriodicCleanup();
+    }
+
+    /**
+     * Scan code for dangerous patterns before execution
+     * @param {string} code - Code to scan
+     * @returns {Object} - { safe: boolean, issues: string[] }
+     */
+    scanCodeForDangers(code) {
+        const issues = [];
+
+        for (const { pattern, description } of this.dangerousPatterns) {
+            if (pattern.test(code)) {
+                issues.push(description);
+            }
+        }
+
+        // Check code size limit (100KB)
+        if (code.length > 100000) {
+            issues.push('Code exceeds maximum allowed size (100KB)');
+        }
+
+        return {
+            safe: issues.length === 0,
+            issues
+        };
     }
 
     /**
@@ -77,11 +115,25 @@ class SecureDOMExecutor {
      */
     async executeInSecureFrame(code, sessionId, options = {}) {
         const { timeout = 30000, allowNetworking = false } = options;
-        
+
+        // Security scan before execution
+        const securityScan = this.scanCodeForDangers(code);
+        if (!securityScan.safe) {
+            logger.warn('Security scan failed for code execution', {
+                sessionId,
+                issues: securityScan.issues
+            });
+            return {
+                success: false,
+                error: `Security check failed: ${securityScan.issues.join('; ')}`,
+                logs: []
+            };
+        }
+
         return new Promise((resolve, reject) => {
             try {
                 const { iframe, iframeId } = this.createSecureIframe(sessionId);
-                
+
                 // Create secure HTML document
                 const secureHTML = this.createSecureDocument(code, allowNetworking);
                 
@@ -144,9 +196,15 @@ class SecureDOMExecutor {
      * Create secure HTML document with CSP and error handling
      */
     createSecureDocument(code, allowNetworking) {
-        const cspPolicy = allowNetworking ? 
+        const cspPolicy = allowNetworking ?
             "default-src 'self' data:; script-src 'unsafe-inline'; style-src 'unsafe-inline';" :
             "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline';";
+
+        // Get the parent origin for secure postMessage
+        // In Electron, this is typically 'file://' or a custom protocol
+        const parentOrigin = typeof window !== 'undefined' ? window.location.origin : '*';
+        // Escape for embedding in the HTML document
+        const safeParentOrigin = parentOrigin.replace(/'/g, "\\'");
 
         return `
 <!DOCTYPE html>
@@ -193,6 +251,8 @@ class SecureDOMExecutor {
 
     <script>
         (function() {
+            // Target origin for postMessage (set by parent)
+            const targetOrigin = '${safeParentOrigin}';
             const logs = [];
             const originalConsole = { ...console };
             
@@ -219,13 +279,13 @@ class SecureDOMExecutor {
                     colno: event.colno,
                     stack: event.error ? event.error.stack : null
                 };
-                
+
                 parent.postMessage({
                     type: 'execution-error',
                     error: errorInfo.message,
                     details: errorInfo,
                     logs: logs
-                }, '*');
+                }, targetOrigin);
             });
 
             // Unhandled promise rejection handler
@@ -234,7 +294,7 @@ class SecureDOMExecutor {
                     type: 'execution-error',
                     error: 'Unhandled Promise Rejection: ' + event.reason,
                     logs: logs
-                }, '*');
+                }, targetOrigin);
             });
 
             // Execute user code with error handling
@@ -243,10 +303,10 @@ class SecureDOMExecutor {
                 const document = window.document;
                 const localStorage = window.localStorage;
                 const sessionStorage = window.sessionStorage;
-                
+
                 // Execute the user code
                 ${code}
-                
+
                 // If execution completes without error, report success
                 setTimeout(() => {
                     parent.postMessage({
@@ -254,16 +314,16 @@ class SecureDOMExecutor {
                         result: 'Code executed successfully',
                         logs: logs,
                         htmlContent: document.body.innerHTML
-                    }, '*');
+                    }, targetOrigin);
                 }, 100);
-                
+
             } catch (error) {
                 parent.postMessage({
                     type: 'execution-error',
                     error: error.message,
                     stack: error.stack,
                     logs: logs
-                }, '*');
+                }, targetOrigin);
             }
         })();
     </script>
@@ -275,9 +335,23 @@ class SecureDOMExecutor {
      * Execute code directly in current context (for simple DOM operations)
      */
     async executeInCurrentContext(code, sessionId, targetElement = null) {
+        // Security scan before execution
+        const securityScan = this.scanCodeForDangers(code);
+        if (!securityScan.safe) {
+            logger.warn('Security scan failed for direct code execution', {
+                sessionId,
+                issues: securityScan.issues
+            });
+            return {
+                success: false,
+                error: `Security check failed: ${securityScan.issues.join('; ')}`,
+                logs: []
+            };
+        }
+
         const startTime = Date.now();
         const logs = [];
-        
+
         // Create isolated scope
         const executionScope = {
             // Provide safe DOM access

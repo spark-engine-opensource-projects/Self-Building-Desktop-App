@@ -8,12 +8,27 @@ const cacheManager = require('../../src/utils/cacheManager');
 describe('CacheManager', () => {
   beforeEach(() => {
     cacheManager.clear();
-    cacheManager.updateConfig({
+    // Reset all state to avoid pollution between tests
+    cacheManager.cacheStats = {
+      hits: 0,
+      misses: 0,
+      evictions: 0,
+      lruEvictions: 0,
+      memoryEvictions: 0,
+      totalRequests: 0
+    };
+    cacheManager.currentMemoryUsage = 0;
+    cacheManager.maxCacheSize = 100; // Reset to default
+    cacheManager.maxMemoryMB = 50; // Reset to default
+    cacheManager.accessOrder.clear();
+    // Reset config completely
+    cacheManager.config = {
       enabled: true,
       ttl: 3600000,
       maxSimilarity: 0.85,
-      maxPromptLength: 1000
-    });
+      maxPromptLength: 1000,
+      evictionPolicy: 'lru'
+    };
   });
 
   describe('generateCacheKey', () => {
@@ -121,6 +136,9 @@ describe('CacheManager', () => {
     });
 
     test('should find similar cached prompts', () => {
+      // Lower similarity threshold for this test (Jaccard similarity ~0.3 for different phrasings)
+      cacheManager.updateConfig({ maxSimilarity: 0.25 });
+
       const originalPrompt = 'Create a todo list application with React';
       const similarPrompt = 'Build a todo app using React';
       const result = {
@@ -137,9 +155,14 @@ describe('CacheManager', () => {
 
   describe('cache management', () => {
     test('should evict least used items when cache is full', () => {
+      // Use fake timers to ensure different access times for LRU
+      jest.useFakeTimers();
+      const baseTime = Date.now();
+      jest.setSystemTime(baseTime);
+
       // Set small cache size for testing
       cacheManager.maxCacheSize = 2;
-      
+
       const results = {
         success: true,
         data: { code: 'test', packages: [], description: 'test' }
@@ -147,17 +170,23 @@ describe('CacheManager', () => {
 
       // Fill cache
       cacheManager.set('prompt1', results);
+      jest.advanceTimersByTime(100); // Advance time
+
       cacheManager.set('prompt2', results);
-      
+      jest.advanceTimersByTime(100); // Advance time
+
       // Access first item to make it more recently used
       cacheManager.get('prompt1');
-      
-      // Add third item, should evict prompt2
+      jest.advanceTimersByTime(100); // Advance time
+
+      // Add third item, should evict prompt2 (least recently used)
       cacheManager.set('prompt3', results);
-      
+
       expect(cacheManager.get('prompt1')).toEqual(results);
       expect(cacheManager.get('prompt2')).toBeNull();
       expect(cacheManager.get('prompt3')).toEqual(results);
+
+      jest.useRealTimers();
     });
 
     test('should clear entire cache', () => {

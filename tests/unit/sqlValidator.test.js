@@ -32,7 +32,7 @@ describe('SQL Validator', () => {
             dangerousQueries.forEach(query => {
                 expect(() => {
                     sqlValidator.validateQuery(query);
-                }).toThrow(/dangerous|not allowed/i);
+                }).toThrow(/dangerous|not allowed|suspicious/i);
             });
         });
 

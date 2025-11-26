@@ -3,22 +3,31 @@ const configManager = require('./configManager');
 
 class ErrorRecoveryManager {
     constructor() {
+        // Get model from config with fallback - handle case when config isn't initialized yet
+        let configuredModel = 'claude-opus-4-5-20251101';
+        try {
+            const aiConfig = configManager.get('ai') || {};
+            configuredModel = aiConfig.model || configuredModel;
+        } catch (e) {
+            // Config not initialized yet, use default
+        }
+
         this.generationStrategies = [
             {
                 name: 'standard',
-                model: 'claude-3-5-sonnet-20241022',
+                model: configuredModel,
                 temperature: 0.7,
                 maxTokens: 2000
             },
             {
                 name: 'conservative',
-                model: 'claude-3-5-sonnet-20241022',
+                model: configuredModel,
                 temperature: 0.3,
                 maxTokens: 2000
             },
             {
                 name: 'extended',
-                model: 'claude-3-5-sonnet-20241022',
+                model: configuredModel,
                 temperature: 0.5,
                 maxTokens: 4000
             }

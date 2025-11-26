@@ -296,12 +296,15 @@ class CircuitBreakerManager {
     }
 
     /**
-     * Reset all circuit breakers
+     * Reset all circuit breakers (reset state AND clear map for fresh start)
      */
     resetAll() {
+        // Reset state on all existing breakers (for tests that hold references)
         for (const breaker of this.breakers.values()) {
             breaker.reset();
         }
+        // Then clear the map for fresh start
+        this.breakers.clear();
     }
 
     /**
