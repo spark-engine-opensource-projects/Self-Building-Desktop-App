@@ -86,6 +86,16 @@ module.exports = {
         ALLOWED_EXTENSIONS: ['.js', '.json', '.txt', '.md', '.sql']
     },
 
+    // Database Configuration (Multi-App Shared Database)
+    DATABASE: {
+        SHARED_DB_NAME: 'shared',
+        MAX_SCHEMA_CONTEXT_TABLES: 20,
+        MAX_SAMPLE_ROWS_PER_TABLE: 3,
+        SCHEMA_CACHE_TTL_MS: 60000, // 1 minute
+        MAX_APPS: 50,
+        MAX_TABLES_PER_APP: 100
+    },
+
     // Network
     NETWORK: {
         REQUEST_TIMEOUT_MS: 30000, // 30 seconds

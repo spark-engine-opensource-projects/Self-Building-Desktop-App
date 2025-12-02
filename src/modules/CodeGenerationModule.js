@@ -844,6 +844,29 @@ async function loadPage(page) {
 // IN clause
 {where: {status: {$in: ['active', 'pending']}}}
 
+=== MULTI-APP DATABASE SHARING (IMPORTANT!) ===
+
+This application supports MULTIPLE apps sharing the SAME database.
+When you receive a schema context showing existing tables:
+
+1. REUSE EXISTING TABLES: If an existing table matches your data needs, use it!
+   - Don't create a "contacts" table if one already exists
+   - Don't create duplicate tables for similar data
+
+2. CREATE FOREIGN KEY RELATIONSHIPS: Link your data to existing tables
+   - Example: If "contacts" table exists and you need to track expenses per contact,
+     create an "expenses" table with a "contact_id" column referencing contacts.id
+
+3. QUERY RELATED DATA: Use executeQuery for JOIN operations across tables
+   - Example: SELECT e.*, c.name FROM expenses e JOIN contacts c ON e.contact_id = c.id
+
+4. DON'T MODIFY EXISTING TABLES: If you need additional fields, create a related table
+   - Don't try to add columns to existing tables
+   - Create a new table with a foreign key reference instead
+
+5. INCLUDE RELATIONSHIPS IN YOUR RESPONSE: When creating tables that reference others,
+   note the relationship in your code comments
+
 === REMEMBER ===
 - ALWAYS call createTable() FIRST - it creates the table if it doesn't exist
 - ONLY use: createTable, insertData, queryData, updateData, deleteData, executeQuery
@@ -852,6 +875,7 @@ async function loadPage(page) {
 - Always include try-catch error handling
 - Always check result.success before proceeding
 - updateData and deleteData take ID directly: updateData('table', id, data)
+- CHECK the existing schema context for tables to reuse before creating new ones
 
 === CORRECT CODE STRUCTURE ===
 

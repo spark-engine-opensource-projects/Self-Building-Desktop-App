@@ -11,17 +11,24 @@ class DynamicAppRenderer {
         this.secureDOMExecutor = null;
         this.theme = 'light';
 
+        // Multi-app runtime components
+        this.appManager = null;
+        this.messageBus = null;
+        this.dataChangeBroadcaster = null;
+        this.multiAppMode = false;
+
         // Performance optimization
         if (window.UIPerformanceMonitor) {
             this.performanceMonitor = window.UIPerformanceMonitor;
             this.performanceMonitor.start();
         }
-        
+
         this.initializeElements();
         this.setupEventListeners();
         this.updateUI();
         this.initializeSecureExecution();
         this.initializeTheme();
+        this.initializeMultiAppRuntime();
     }
 
     initializeSecureExecution() {
@@ -126,6 +133,14 @@ class DynamicAppRenderer {
         this.currentTable = null;
         this.currentSchema = null;
         this.generatedSchema = null;
+
+        // Multi-app runtime elements
+        this.multiAppRuntime = document.getElementById('multiAppRuntime');
+        this.appPanelsContainer = document.getElementById('appPanelsContainer');
+        this.appTabsBar = document.getElementById('appTabsBar');
+        this.clearAllAppsBtn = document.getElementById('clearAllAppsBtn');
+        this.runningAppsCount = document.getElementById('runningAppsCount');
+        this.sharedDbName = document.getElementById('sharedDbName');
     }
 
     setupEventListeners() {
@@ -231,6 +246,19 @@ class DynamicAppRenderer {
             if (e.target.matches('.tab-btn')) {
                 this.switchSchemaTab(e.target.dataset.tab);
             }
+        });
+
+        // Multi-app runtime event listeners
+        if (this.clearAllAppsBtn) {
+            this.clearAllAppsBtn.addEventListener('click', () => this.clearAllApps());
+        }
+
+        // Layout control buttons
+        document.querySelectorAll('.layout-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const layout = e.currentTarget.dataset.layout;
+                this.setMultiAppLayout(layout);
+            });
         });
     }
 
@@ -714,40 +742,56 @@ class DynamicAppRenderer {
         try {
             // Check if this is DOM code (contains document/DOM methods)
             const isDOMCode = /document\.|window\.|addEventListener|createElement|getElementById|querySelector/i.test(this.currentCode);
-            
-            let result;
-            if (isDOMCode) {
-                // Execute DOM code securely
-                result = await this.executeSecureDOMCode(this.currentCode);
+
+            // For DOM code, launch in multi-app mode if AppManager is available
+            if (isDOMCode && this.appManager) {
+                const appName = this.codeDescription?.textContent || 'Generated App';
+                const panel = await this.executeInMultiAppMode(
+                    this.currentCode,
+                    appName,
+                    this.promptInput.value.substring(0, 100)
+                );
+
+                if (panel) {
+                    this.executionOutput.textContent = `App "${appName}" launched in multi-app panel`;
+                    this.errorSection.style.display = 'none';
+                    this.executionResults.style.display = 'block';
+                    // Scroll to multi-app section
+                    this.multiAppRuntime?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                } else {
+                    // Fallback to standard execution if panel creation failed
+                    await this.executeStandardDOMCode();
+                }
+            } else if (isDOMCode) {
+                // Execute DOM code in execution-root (fallback mode)
+                await this.executeStandardDOMCode();
             } else {
                 // Execute Node.js code in sandbox
-                result = await window.electronAPI.executeCode({
+                const result = await window.electronAPI.executeCode({
                     packages: this.currentPackages,
                     code: this.currentCode,
                     sessionId: this.currentSession
                 });
-            }
 
-            if (result.success) {
-                this.executionOutput.textContent = result.output || (isDOMCode ? 'DOM code executed in browser' : 'No output generated');
-                
-                if (result.errors) {
-                    this.executionErrors.textContent = result.errors;
-                    this.errorSection.style.display = 'block';
-                } else {
-                    this.errorSection.style.display = 'none';
-                }
-                
-                this.executionResults.style.display = 'block';
-                if (!isDOMCode) {
+                if (result.success) {
+                    this.executionOutput.textContent = result.output || 'No output generated';
+
+                    if (result.errors) {
+                        this.executionErrors.textContent = result.errors;
+                        this.errorSection.style.display = 'block';
+                    } else {
+                        this.errorSection.style.display = 'none';
+                    }
+
+                    this.executionResults.style.display = 'block';
                     this.showNotification('Code executed successfully!', 'success');
+                } else {
+                    this.showNotification(`Execution failed: ${result.error}`, 'error');
+                    this.executionOutput.textContent = 'Execution failed';
+                    this.executionErrors.textContent = result.error;
+                    this.errorSection.style.display = 'block';
+                    this.executionResults.style.display = 'block';
                 }
-            } else {
-                this.showNotification(`Execution failed: ${result.error}`, 'error');
-                this.executionOutput.textContent = 'Execution failed';
-                this.executionErrors.textContent = result.error;
-                this.errorSection.style.display = 'block';
-                this.executionResults.style.display = 'block';
             }
         } catch (error) {
             this.showNotification(`Error: ${error.message}`, 'error');
@@ -755,6 +799,33 @@ class DynamicAppRenderer {
             this._isExecuting = false;  // Reset debounce lock
             this.executeBtn.disabled = false;
             this.executeBtn.innerHTML = '▶️ Execute';
+        }
+    }
+
+    /**
+     * Execute DOM code in the standard execution-root container
+     */
+    async executeStandardDOMCode() {
+        const result = await this.executeSecureDOMCode(this.currentCode);
+
+        if (result.success) {
+            this.executionOutput.textContent = result.output || 'DOM code executed in browser';
+
+            if (result.errors) {
+                this.executionErrors.textContent = result.errors;
+                this.errorSection.style.display = 'block';
+            } else {
+                this.errorSection.style.display = 'none';
+            }
+
+            this.executionResults.style.display = 'block';
+            this.showNotification('Code executed successfully!', 'success');
+        } else {
+            this.showNotification(`Execution failed: ${result.error}`, 'error');
+            this.executionOutput.textContent = 'Execution failed';
+            this.executionErrors.textContent = result.error;
+            this.errorSection.style.display = 'block';
+            this.executionResults.style.display = 'block';
         }
     }
 
@@ -1806,6 +1877,13 @@ ${columns.map(col => `    { name: '${col.name}', type: '${col.type}'${col.requir
                             generateBtn.addEventListener('click', () => this.generateUIForTable(tableName));
                             actionsDiv.appendChild(generateBtn);
 
+                            // Delete table button
+                            const deleteBtn = document.createElement('button');
+                            deleteBtn.className = 'btn btn-sm btn-danger';
+                            deleteBtn.textContent = '🗑️ Delete';
+                            deleteBtn.addEventListener('click', () => this.deleteTable(tableName));
+                            actionsDiv.appendChild(deleteBtn);
+
                             tableItem.appendChild(actionsDiv);
                             this.tablesList.appendChild(tableItem);
                         }
@@ -1825,9 +1903,142 @@ ${columns.map(col => `    { name: '${col.name}', type: '${col.type}'${col.requir
     async selectTable(tableName) {
         this.currentTable = tableName;
         this.currentTableName.textContent = `${tableName} Data`;
-        
+
         this.showDataPanel();
         await this.loadTableData();
+    }
+
+    /**
+     * Delete a table from the database
+     */
+    async deleteTable(tableName) {
+        // Show confirmation dialog
+        const confirmed = await this.showConfirmDialog(
+            `Delete Table "${tableName}"?`,
+            `This will permanently delete the table "${tableName}" and all its data. This action cannot be undone.`
+        );
+
+        if (!confirmed) {
+            return;
+        }
+
+        try {
+            const result = await window.electronAPI.dropTable(tableName);
+
+            if (result.success) {
+                this.showNotification(`Table "${tableName}" deleted successfully`, 'success');
+
+                // Hide data panel if current table was deleted
+                if (this.currentTable === tableName) {
+                    this.hideDataPanel();
+                    this.currentTable = null;
+                }
+
+                // Refresh tables list
+                await this.loadTables();
+            } else {
+                this.showNotification(`Failed to delete table: ${result.error}`, 'error');
+            }
+        } catch (error) {
+            this.showNotification(`Error deleting table: ${error.message}`, 'error');
+        }
+    }
+
+    /**
+     * Show a confirmation dialog
+     */
+    async showConfirmDialog(title, message) {
+        return new Promise((resolve) => {
+            const modal = document.createElement('div');
+            modal.className = 'confirm-modal';
+            modal.innerHTML = `
+                <div class="confirm-dialog">
+                    <h3>${this.escapeHtml(title)}</h3>
+                    <p>${this.escapeHtml(message)}</p>
+                    <div class="confirm-actions">
+                        <button class="btn btn-secondary" id="confirm-cancel">Cancel</button>
+                        <button class="btn btn-danger" id="confirm-delete">Delete</button>
+                    </div>
+                </div>
+            `;
+
+            // Add modal styles if not already present
+            if (!document.getElementById('confirm-modal-styles')) {
+                const styles = document.createElement('style');
+                styles.id = 'confirm-modal-styles';
+                styles.textContent = `
+                    .confirm-modal {
+                        position: fixed;
+                        top: 0;
+                        left: 0;
+                        right: 0;
+                        bottom: 0;
+                        background: rgba(0, 0, 0, 0.5);
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        z-index: 10000;
+                    }
+                    .confirm-dialog {
+                        background: var(--card-bg, #fff);
+                        padding: 24px;
+                        border-radius: 12px;
+                        max-width: 400px;
+                        width: 90%;
+                        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+                    }
+                    .confirm-dialog h3 {
+                        margin: 0 0 12px 0;
+                        color: var(--text-primary, #333);
+                    }
+                    .confirm-dialog p {
+                        margin: 0 0 20px 0;
+                        color: var(--text-secondary, #666);
+                        line-height: 1.5;
+                    }
+                    .confirm-actions {
+                        display: flex;
+                        gap: 12px;
+                        justify-content: flex-end;
+                    }
+                `;
+                document.head.appendChild(styles);
+            }
+
+            document.body.appendChild(modal);
+
+            const cleanup = () => {
+                modal.remove();
+            };
+
+            modal.querySelector('#confirm-cancel').addEventListener('click', () => {
+                cleanup();
+                resolve(false);
+            });
+
+            modal.querySelector('#confirm-delete').addEventListener('click', () => {
+                cleanup();
+                resolve(true);
+            });
+
+            // Click outside to cancel
+            modal.addEventListener('click', (e) => {
+                if (e.target === modal) {
+                    cleanup();
+                    resolve(false);
+                }
+            });
+
+            // Escape key to cancel
+            const handleEscape = (e) => {
+                if (e.key === 'Escape') {
+                    cleanup();
+                    document.removeEventListener('keydown', handleEscape);
+                    resolve(false);
+                }
+            };
+            document.addEventListener('keydown', handleEscape);
+        });
     }
 
     /**
@@ -2076,6 +2287,206 @@ ${columns.map(col => `    { name: '${col.name}', type: '${col.type}'${col.requir
         // Load saved theme preference
         const savedTheme = localStorage.getItem('theme') || 'light';
         this.setTheme(savedTheme);
+    }
+
+    /**
+     * Initialize multi-app runtime components
+     */
+    initializeMultiAppRuntime() {
+        try {
+            // Initialize message bus
+            if (typeof AppMessageBus !== 'undefined') {
+                this.messageBus = new AppMessageBus();
+                window.rendererLogger.debug('AppMessageBus initialized');
+            }
+
+            // Initialize data change broadcaster
+            if (typeof DataChangeBroadcaster !== 'undefined') {
+                this.dataChangeBroadcaster = new DataChangeBroadcaster(this.messageBus);
+                window.rendererLogger.debug('DataChangeBroadcaster initialized');
+            }
+
+            // Initialize app manager
+            if (typeof AppManager !== 'undefined' && this.appPanelsContainer) {
+                this.appManager = new AppManager({
+                    layout: 'grid',
+                    maxPanels: 6,
+                    onPanelCreated: (panel) => this.handlePanelCreated(panel),
+                    onPanelClosed: (panel) => this.handlePanelClosed(panel),
+                    onLayoutChange: (layout) => this.handleLayoutChange(layout),
+                    onDataChange: (change) => this.handleAppDataChange(change)
+                });
+
+                // Set message bus and broadcaster
+                this.appManager.messageBus = this.messageBus;
+                this.appManager.dataChangeBroadcaster = this.dataChangeBroadcaster;
+
+                // Initialize with container
+                this.appManager.initialize(this.appPanelsContainer);
+
+                window.rendererLogger.debug('AppManager initialized');
+            }
+
+            // Check if there are restored panels
+            if (this.appManager && this.appManager.panels.size > 0) {
+                this.showMultiAppRuntime();
+            }
+
+        } catch (error) {
+            window.rendererLogger.error('Failed to initialize multi-app runtime:', error);
+        }
+    }
+
+    /**
+     * Handle panel created event
+     */
+    handlePanelCreated(panel) {
+        this.updateMultiAppStats();
+        window.rendererLogger.debug(`Panel created: ${panel.appName}`);
+    }
+
+    /**
+     * Handle panel closed event
+     */
+    handlePanelClosed(panel) {
+        this.updateMultiAppStats();
+
+        // Hide runtime section if no panels remain
+        if (this.appManager && this.appManager.panels.size === 0) {
+            this.hideMultiAppRuntime();
+        }
+
+        window.rendererLogger.debug(`Panel closed: ${panel.appName}`);
+    }
+
+    /**
+     * Handle layout change event
+     */
+    handleLayoutChange(layout) {
+        // Update layout button states
+        document.querySelectorAll('.layout-btn').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.layout === layout);
+        });
+
+        // Update tabs bar visibility
+        if (this.appTabsBar) {
+            this.appTabsBar.style.display = layout === 'tabs' ? 'flex' : 'none';
+        }
+
+        window.rendererLogger.debug(`Layout changed to: ${layout}`);
+    }
+
+    /**
+     * Handle app data change event
+     */
+    handleAppDataChange(change) {
+        window.rendererLogger.debug('App data change:', change);
+
+        // Broadcast to data change broadcaster for real-time sync
+        if (this.dataChangeBroadcaster) {
+            this.dataChangeBroadcaster.broadcast(change);
+        }
+    }
+
+    /**
+     * Show multi-app runtime section
+     */
+    showMultiAppRuntime() {
+        if (this.multiAppRuntime) {
+            this.multiAppRuntime.style.display = 'block';
+            this.multiAppMode = true;
+        }
+    }
+
+    /**
+     * Hide multi-app runtime section
+     */
+    hideMultiAppRuntime() {
+        if (this.multiAppRuntime) {
+            this.multiAppRuntime.style.display = 'none';
+            this.multiAppMode = false;
+        }
+    }
+
+    /**
+     * Update multi-app statistics display
+     */
+    updateMultiAppStats() {
+        if (this.runningAppsCount && this.appManager) {
+            this.runningAppsCount.textContent = this.appManager.panels.size;
+        }
+    }
+
+    /**
+     * Set multi-app layout mode
+     */
+    setMultiAppLayout(layout) {
+        if (this.appManager) {
+            this.appManager.setLayout(layout);
+        }
+    }
+
+    /**
+     * Clear all running apps
+     */
+    clearAllApps() {
+        if (this.appManager) {
+            this.appManager.clearAllPanels();
+            this.hideMultiAppRuntime();
+            this.showNotification('All apps closed', 'info');
+        }
+    }
+
+    /**
+     * Create a new app panel from generated code
+     */
+    async createAppPanel(appName, description, code) {
+        if (!this.appManager) {
+            window.rendererLogger.warn('AppManager not initialized');
+            return null;
+        }
+
+        try {
+            // Generate unique app ID
+            const appId = `app_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+            // Create panel
+            const panel = this.appManager.createPanel({
+                appId,
+                appName: appName || 'Generated App',
+                description: description || 'AI-generated application'
+            });
+
+            // Show multi-app runtime
+            this.showMultiAppRuntime();
+
+            // Execute code in panel
+            await panel.execute(code);
+
+            // Register app in database
+            try {
+                await window.electronAPI.registerApp(appId, appName, description);
+            } catch (regError) {
+                window.rendererLogger.warn('Failed to register app:', regError);
+            }
+
+            return panel;
+        } catch (error) {
+            window.rendererLogger.error('Failed to create app panel:', error);
+            this.showNotification(`Failed to create app: ${error.message}`, 'error');
+            return null;
+        }
+    }
+
+    /**
+     * Execute code in multi-app mode (creates a new panel)
+     */
+    async executeInMultiAppMode(code, appName, description) {
+        const panel = await this.createAppPanel(appName, description, code);
+        if (panel) {
+            this.showNotification(`App "${appName}" launched!`, 'success');
+        }
+        return panel;
     }
 
     /**

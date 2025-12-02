@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' https://api.anthropic.com; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'; worker-src 'none'; manifest-src 'self'; media-src 'none';">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' https://api.anthropic.com; frame-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; worker-src 'none'; manifest-src 'self'; media-src 'none';">
     <meta http-equiv="X-Content-Type-Options" content="nosniff">
     <meta name="referrer" content="no-referrer">
     <title>AI Dynamic Application Builder</title>
@@ -148,6 +148,60 @@ Examples:
             <!-- Execution root for generated content -->
             <div id="execution-root" style="margin-top: 20px; padding: 20px; border: 2px dashed #e2e8f0; border-radius: 8px; background: #f8fafc;">
                 <!-- Generated UI components will appear here -->
+            </div>
+        </section>
+
+        <!-- Multi-App Runtime -->
+        <section class="multi-app-runtime" id="multiAppRuntime" style="display: none;">
+            <div class="multi-app-header">
+                <h2>🚀 Running Apps</h2>
+                <div class="layout-controls">
+                    <button class="layout-btn active" data-layout="grid" title="Grid Layout">
+                        <svg viewBox="0 0 24 24" width="18" height="18">
+                            <rect x="3" y="3" width="7" height="7" fill="currentColor"/>
+                            <rect x="14" y="3" width="7" height="7" fill="currentColor"/>
+                            <rect x="3" y="14" width="7" height="7" fill="currentColor"/>
+                            <rect x="14" y="14" width="7" height="7" fill="currentColor"/>
+                        </svg>
+                    </button>
+                    <button class="layout-btn" data-layout="stack" title="Stack Layout">
+                        <svg viewBox="0 0 24 24" width="18" height="18">
+                            <rect x="3" y="3" width="18" height="5" fill="currentColor"/>
+                            <rect x="3" y="10" width="18" height="5" fill="currentColor"/>
+                            <rect x="3" y="17" width="18" height="5" fill="currentColor"/>
+                        </svg>
+                    </button>
+                    <button class="layout-btn" data-layout="tabs" title="Tabs Layout">
+                        <svg viewBox="0 0 24 24" width="18" height="18">
+                            <rect x="3" y="3" width="6" height="4" fill="currentColor"/>
+                            <rect x="10" y="3" width="6" height="4" fill="currentColor"/>
+                            <rect x="3" y="8" width="18" height="13" fill="currentColor"/>
+                        </svg>
+                    </button>
+                    <button class="btn btn-outline btn-sm" id="clearAllAppsBtn" title="Close All Apps">
+                        Clear All
+                    </button>
+                </div>
+            </div>
+
+            <!-- App Tabs Bar (visible in tabs mode) -->
+            <div class="app-tabs-bar" id="appTabsBar" style="display: none;">
+                <!-- Tabs will be dynamically added here -->
+            </div>
+
+            <!-- App Panels Container -->
+            <div class="app-panels-container layout-grid" id="appPanelsContainer">
+                <!-- App panels will be dynamically added here -->
+            </div>
+
+            <!-- Multi-App Stats -->
+            <div class="multi-app-stats" id="multiAppStats">
+                <span class="stat-item">
+                    <strong>Apps:</strong> <span id="runningAppsCount">0</span>
+                </span>
+                <span class="stat-item">
+                    <strong>Database:</strong> <span id="sharedDbName">shared</span>
+                </span>
             </div>
         </section>
 
@@ -370,6 +424,11 @@ Examples:
     <script src="../utils/secureDOMExecutor.js"></script>
     <script src="../utils/dataVisualizer.js"></script>
     <script src="domHelpers.js"></script>
+    <!-- Multi-App Runtime Components -->
+    <script src="components/AppMessageBus.js"></script>
+    <script src="components/DataChangeBroadcaster.js"></script>
+    <script src="components/AppPanel.js"></script>
+    <script src="components/AppManager.js"></script>
     <script src="renderer.js"></script>
 </body>
 </html>

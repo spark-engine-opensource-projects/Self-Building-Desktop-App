@@ -17,6 +17,39 @@ class EnhancedJSONParser {
                 description: {
                     type: 'string',
                     minLength: 1
+                },
+                // Optional: Table relationships detected by AI
+                relationships: {
+                    type: 'array',
+                    optional: true,
+                    items: {
+                        type: 'object',
+                        properties: {
+                            sourceTable: { type: 'string' },
+                            targetTable: { type: 'string' },
+                            type: { type: 'string' }, // 'foreign_key', 'references', 'one_to_many', etc.
+                            description: { type: 'string' }
+                        }
+                    }
+                },
+                // Optional: Tables created by this code
+                tablesCreated: {
+                    type: 'array',
+                    optional: true,
+                    items: {
+                        type: 'object',
+                        properties: {
+                            name: { type: 'string' },
+                            description: { type: 'string' },
+                            columns: { type: 'array' }
+                        }
+                    }
+                },
+                // Optional: Existing tables referenced by this code
+                tablesReferenced: {
+                    type: 'array',
+                    optional: true,
+                    items: { type: 'string' }
                 }
             }
         };
@@ -440,13 +473,37 @@ class EnhancedJSONParser {
      * Sanitize and normalize parsed data
      */
     sanitizeData(data) {
-        return {
-            packages: Array.isArray(data.packages) ? 
-                data.packages.filter(pkg => typeof pkg === 'string' && pkg.trim().length > 0) : 
+        const sanitized = {
+            packages: Array.isArray(data.packages) ?
+                data.packages.filter(pkg => typeof pkg === 'string' && pkg.trim().length > 0) :
                 [],
             code: typeof data.code === 'string' ? data.code.trim() : '',
             description: typeof data.description === 'string' ? data.description.trim() : 'No description provided'
         };
+
+        // Handle optional multi-app relationship fields
+        if (Array.isArray(data.relationships)) {
+            sanitized.relationships = data.relationships.filter(rel =>
+                rel && typeof rel === 'object' &&
+                typeof rel.sourceTable === 'string' &&
+                typeof rel.targetTable === 'string'
+            );
+        }
+
+        if (Array.isArray(data.tablesCreated)) {
+            sanitized.tablesCreated = data.tablesCreated.filter(table =>
+                table && typeof table === 'object' &&
+                typeof table.name === 'string'
+            );
+        }
+
+        if (Array.isArray(data.tablesReferenced)) {
+            sanitized.tablesReferenced = data.tablesReferenced.filter(
+                table => typeof table === 'string' && table.trim().length > 0
+            );
+        }
+
+        return sanitized;
     }
 
     /**

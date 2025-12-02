@@ -5,6 +5,7 @@ const { v4: uuidv4 } = require('uuid');
 const logger = require('./logger');
 const sqlValidator = require('./sqlValidator');
 const databaseOptimizer = require('./databaseOptimizer');
+const { DATABASE } = require('../config/constants');
 
 class DatabaseManager {
     constructor(dataPath = null, options = {}) {
@@ -884,8 +885,61 @@ class DatabaseManager {
             INSERT OR REPLACE INTO _metadata (table_name, schema_json, updated_at)
             VALUES (?, ?, CURRENT_TIMESTAMP)
         `);
-        
+
         saveSchema.run(tableName, JSON.stringify(schema));
+    }
+
+    /**
+     * Drop a table from the database
+     * @param {string} dbName - Database name
+     * @param {string} tableName - Table name to drop
+     * @returns {Object} - Result with success status
+     */
+    async dropTable(dbName, tableName) {
+        try {
+            const db = await this.connectDatabase(dbName);
+
+            // Validate table name
+            if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(tableName)) {
+                return { success: false, error: 'Invalid table name' };
+            }
+
+            // Prevent dropping system tables
+            const systemTables = ['_metadata', '_app_registry', '_table_registry', '_table_relationships'];
+            if (systemTables.includes(tableName)) {
+                return { success: false, error: 'Cannot drop system tables' };
+            }
+
+            // Check if table exists
+            const tableExists = db.prepare(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?"
+            ).get(tableName);
+
+            if (!tableExists) {
+                return { success: false, error: 'Table does not exist' };
+            }
+
+            // Drop the table
+            db.exec(`DROP TABLE IF EXISTS "${tableName}"`);
+
+            // Remove from metadata
+            db.prepare('DELETE FROM _metadata WHERE table_name = ?').run(tableName);
+
+            // Remove from table registry if exists
+            try {
+                db.prepare('DELETE FROM _table_registry WHERE table_name = ?').run(tableName);
+                db.prepare('DELETE FROM _table_relationships WHERE source_table = ? OR target_table = ?').run(tableName, tableName);
+            } catch (e) {
+                // Registry tables might not exist in older databases
+            }
+
+            logger.info('Table dropped successfully', { database: dbName, table: tableName });
+
+            return { success: true, table: tableName };
+        } catch (error) {
+            logger.error('Failed to drop table', { database: dbName, table: tableName, error });
+            return { success: false, error: error.message };
+        }
     }
 
     /**
@@ -1400,6 +1454,426 @@ class DatabaseManager {
             } catch (error) {
                 logger.error('Error closing database connection', { database: dbName, error });
             }
+        }
+    }
+
+    // ============================================================
+    // MULTI-APP REGISTRY METHODS
+    // For managing multiple apps sharing the same database
+    // ============================================================
+
+    /**
+     * Initialize the shared database with registry tables
+     * Creates system tables for tracking apps, table ownership, and relationships
+     * @param {string} dbName - Database name (defaults to SHARED_DB_NAME from constants)
+     * @returns {Promise<{success: boolean, error?: string}>}
+     */
+    async initializeSharedDatabase(dbName = DATABASE.SHARED_DB_NAME) {
+        try {
+            const db = await this.connectDatabase(dbName);
+
+            // Create app registry table
+            db.exec(`
+                CREATE TABLE IF NOT EXISTS _app_registry (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    app_id TEXT UNIQUE NOT NULL,
+                    app_name TEXT NOT NULL,
+                    description TEXT,
+                    status TEXT DEFAULT 'active',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            `);
+
+            // Create table registry for tracking table ownership
+            db.exec(`
+                CREATE TABLE IF NOT EXISTS _table_registry (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    table_name TEXT UNIQUE NOT NULL,
+                    app_id TEXT,
+                    schema_json TEXT NOT NULL,
+                    description TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (app_id) REFERENCES _app_registry(app_id)
+                )
+            `);
+
+            // Create table relationships tracking
+            db.exec(`
+                CREATE TABLE IF NOT EXISTS _table_relationships (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_table TEXT NOT NULL,
+                    target_table TEXT NOT NULL,
+                    relationship_type TEXT NOT NULL,
+                    description TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(source_table, target_table, relationship_type)
+                )
+            `);
+
+            // Create indexes for faster lookups
+            db.exec(`
+                CREATE INDEX IF NOT EXISTS idx_table_registry_app_id ON _table_registry(app_id);
+                CREATE INDEX IF NOT EXISTS idx_table_relationships_source ON _table_relationships(source_table);
+                CREATE INDEX IF NOT EXISTS idx_table_relationships_target ON _table_relationships(target_table);
+            `);
+
+            logger.info('Shared database initialized with registry tables', { database: dbName });
+            return { success: true };
+        } catch (error) {
+            logger.error('Failed to initialize shared database', { database: dbName, error });
+            return { success: false, error: error.message };
+        }
+    }
+
+    /**
+     * Register a new app in the shared database
+     * @param {string} appId - Unique identifier for the app
+     * @param {string} appName - Display name for the app
+     * @param {string} description - Description of what the app does
+     * @returns {Promise<{success: boolean, app?: Object, error?: string}>}
+     */
+    async registerApp(appId, appName, description = '') {
+        try {
+            const db = await this.connectDatabase(DATABASE.SHARED_DB_NAME);
+
+            // Ensure registry tables exist
+            await this.initializeSharedDatabase();
+
+            const stmt = db.prepare(`
+                INSERT INTO _app_registry (app_id, app_name, description)
+                VALUES (?, ?, ?)
+                ON CONFLICT(app_id) DO UPDATE SET
+                    app_name = excluded.app_name,
+                    description = excluded.description,
+                    updated_at = CURRENT_TIMESTAMP
+            `);
+
+            stmt.run(appId, appName, description);
+
+            const app = db.prepare('SELECT * FROM _app_registry WHERE app_id = ?').get(appId);
+
+            logger.info('App registered successfully', { appId, appName });
+            return { success: true, app };
+        } catch (error) {
+            logger.error('Failed to register app', { appId, error });
+            return { success: false, error: error.message };
+        }
+    }
+
+    /**
+     * Get information about a registered app
+     * @param {string} appId - The app's unique identifier
+     * @returns {Promise<{success: boolean, app?: Object, error?: string}>}
+     */
+    async getAppInfo(appId) {
+        try {
+            const db = await this.connectDatabase(DATABASE.SHARED_DB_NAME);
+
+            const app = db.prepare('SELECT * FROM _app_registry WHERE app_id = ?').get(appId);
+
+            if (!app) {
+                return { success: false, error: 'App not found' };
+            }
+
+            // Get tables owned by this app
+            const tables = db.prepare('SELECT table_name, description FROM _table_registry WHERE app_id = ?').all(appId);
+
+            return {
+                success: true,
+                app: {
+                    ...app,
+                    tables: tables
+                }
+            };
+        } catch (error) {
+            logger.error('Failed to get app info', { appId, error });
+            return { success: false, error: error.message };
+        }
+    }
+
+    /**
+     * List all registered apps
+     * @returns {Promise<{success: boolean, apps?: Array, error?: string}>}
+     */
+    async listApps() {
+        try {
+            const db = await this.connectDatabase(DATABASE.SHARED_DB_NAME);
+
+            // Ensure registry exists
+            await this.initializeSharedDatabase();
+
+            const apps = db.prepare(`
+                SELECT
+                    ar.*,
+                    COUNT(tr.id) as table_count
+                FROM _app_registry ar
+                LEFT JOIN _table_registry tr ON ar.app_id = tr.app_id
+                GROUP BY ar.id
+                ORDER BY ar.created_at DESC
+            `).all();
+
+            return { success: true, apps };
+        } catch (error) {
+            logger.error('Failed to list apps', { error });
+            return { success: false, error: error.message };
+        }
+    }
+
+    /**
+     * Create a table with ownership tracking
+     * @param {string} dbName - Database name
+     * @param {string} tableName - Name of the table
+     * @param {Object} schema - Table schema
+     * @param {string} appId - The app that owns this table
+     * @param {string} description - Description of the table's purpose
+     * @returns {Promise<{success: boolean, table?: string, error?: string}>}
+     */
+    async createTableWithOwner(dbName, tableName, schema, appId, description = '') {
+        try {
+            // First create the table using existing method
+            const result = await this.createTable(dbName, tableName, schema);
+
+            if (!result.success) {
+                return result;
+            }
+
+            // Register the table in the registry
+            const db = await this.connectDatabase(dbName);
+
+            // Ensure registry tables exist
+            await this.initializeSharedDatabase(dbName);
+
+            const stmt = db.prepare(`
+                INSERT INTO _table_registry (table_name, app_id, schema_json, description)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(table_name) DO UPDATE SET
+                    app_id = excluded.app_id,
+                    schema_json = excluded.schema_json,
+                    description = excluded.description,
+                    updated_at = CURRENT_TIMESTAMP
+            `);
+
+            stmt.run(tableName, appId, JSON.stringify(schema), description);
+
+            logger.info('Table created with owner', { database: dbName, table: tableName, appId });
+            return { success: true, table: tableName };
+        } catch (error) {
+            logger.error('Failed to create table with owner', { dbName, tableName, appId, error });
+            return { success: false, error: error.message };
+        }
+    }
+
+    /**
+     * Record a relationship between tables
+     * @param {string} sourceTable - The source table name
+     * @param {string} targetTable - The target table name
+     * @param {string} relationshipType - Type of relationship (e.g., 'foreign_key', 'references', 'one_to_many')
+     * @param {string} description - Description of the relationship
+     * @returns {Promise<{success: boolean, error?: string}>}
+     */
+    async recordTableRelationship(sourceTable, targetTable, relationshipType, description = '') {
+        try {
+            const db = await this.connectDatabase(DATABASE.SHARED_DB_NAME);
+
+            // Ensure registry tables exist
+            await this.initializeSharedDatabase();
+
+            const stmt = db.prepare(`
+                INSERT INTO _table_relationships (source_table, target_table, relationship_type, description)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(source_table, target_table, relationship_type) DO UPDATE SET
+                    description = excluded.description
+            `);
+
+            stmt.run(sourceTable, targetTable, relationshipType, description);
+
+            logger.info('Table relationship recorded', { sourceTable, targetTable, relationshipType });
+            return { success: true };
+        } catch (error) {
+            logger.error('Failed to record table relationship', { sourceTable, targetTable, error });
+            return { success: false, error: error.message };
+        }
+    }
+
+    /**
+     * Get tables related to a specific table
+     * @param {string} tableName - The table to find relationships for
+     * @returns {Promise<{success: boolean, related?: Array, error?: string}>}
+     */
+    async getRelatedTables(tableName) {
+        try {
+            const db = await this.connectDatabase(DATABASE.SHARED_DB_NAME);
+
+            // Get tables where this table is the source
+            const outgoing = db.prepare(`
+                SELECT target_table as table_name, relationship_type, description, 'outgoing' as direction
+                FROM _table_relationships
+                WHERE source_table = ?
+            `).all(tableName);
+
+            // Get tables where this table is the target
+            const incoming = db.prepare(`
+                SELECT source_table as table_name, relationship_type, description, 'incoming' as direction
+                FROM _table_relationships
+                WHERE target_table = ?
+            `).all(tableName);
+
+            return {
+                success: true,
+                related: [...outgoing, ...incoming]
+            };
+        } catch (error) {
+            logger.error('Failed to get related tables', { tableName, error });
+            return { success: false, error: error.message };
+        }
+    }
+
+    /**
+     * Get all table schemas from the shared database
+     * Includes ownership information and relationships
+     * @param {string} dbName - Database name (defaults to SHARED_DB_NAME)
+     * @returns {Promise<{success: boolean, schemas?: Object, error?: string}>}
+     */
+    async getAllSchemas(dbName = DATABASE.SHARED_DB_NAME) {
+        try {
+            const db = await this.connectDatabase(dbName);
+
+            // Get all user tables (excluding system tables)
+            const tablesResult = await this.listTables(dbName);
+
+            const schemas = {};
+
+            for (const tableName of tablesResult.tables) {
+                const schema = await this.getTableSchema(db, tableName);
+
+                // Try to get registry info if available
+                let registryInfo = null;
+                try {
+                    registryInfo = db.prepare(`
+                        SELECT tr.*, ar.app_name, ar.app_id
+                        FROM _table_registry tr
+                        LEFT JOIN _app_registry ar ON tr.app_id = ar.app_id
+                        WHERE tr.table_name = ?
+                    `).get(tableName);
+                } catch (e) {
+                    // Registry tables might not exist yet
+                }
+
+                // Get relationships
+                let relationships = [];
+                try {
+                    const related = await this.getRelatedTables(tableName);
+                    if (related.success) {
+                        relationships = related.related;
+                    }
+                } catch (e) {
+                    // Relationships table might not exist
+                }
+
+                schemas[tableName] = {
+                    ...schema,
+                    owner: registryInfo ? {
+                        appId: registryInfo.app_id,
+                        appName: registryInfo.app_name,
+                        description: registryInfo.description
+                    } : null,
+                    relationships
+                };
+            }
+
+            return { success: true, schemas };
+        } catch (error) {
+            logger.error('Failed to get all schemas', { dbName, error });
+            return { success: false, error: error.message };
+        }
+    }
+
+    /**
+     * Build a comprehensive schema context for AI prompts
+     * Includes table structures, sample data, and relationships
+     * @param {string} dbName - Database name (defaults to SHARED_DB_NAME)
+     * @returns {Promise<{success: boolean, context?: string, error?: string}>}
+     */
+    async buildSchemaContext(dbName = DATABASE.SHARED_DB_NAME) {
+        try {
+            const db = await this.connectDatabase(dbName);
+            const schemasResult = await this.getAllSchemas(dbName);
+
+            if (!schemasResult.success) {
+                return schemasResult;
+            }
+
+            const schemas = schemasResult.schemas;
+            const tableNames = Object.keys(schemas);
+
+            // Limit to configured max tables
+            const maxTables = DATABASE.MAX_SCHEMA_CONTEXT_TABLES || 20;
+            const tablesToInclude = tableNames.slice(0, maxTables);
+
+            let context = '## Existing Database Schema\n\n';
+            context += `Database: ${dbName}\n`;
+            context += `Total tables: ${tableNames.length}\n\n`;
+
+            for (const tableName of tablesToInclude) {
+                const tableSchema = schemas[tableName];
+
+                context += `### Table: ${tableName}\n`;
+
+                if (tableSchema.owner) {
+                    context += `Owner App: ${tableSchema.owner.appName || tableSchema.owner.appId}\n`;
+                    if (tableSchema.owner.description) {
+                        context += `Purpose: ${tableSchema.owner.description}\n`;
+                    }
+                }
+
+                context += `Columns:\n`;
+                for (const [colName, colDef] of Object.entries(tableSchema.columns || {})) {
+                    const type = colDef.type || 'string';
+                    const constraints = [];
+                    if (colDef.required) constraints.push('NOT NULL');
+                    if (colDef.unique) constraints.push('UNIQUE');
+                    if (colDef.primaryKey) constraints.push('PRIMARY KEY');
+                    if (colDef.default !== undefined) constraints.push(`DEFAULT ${colDef.default}`);
+
+                    context += `  - ${colName}: ${type}${constraints.length ? ' (' + constraints.join(', ') + ')' : ''}\n`;
+                }
+
+                // Add relationships
+                if (tableSchema.relationships && tableSchema.relationships.length > 0) {
+                    context += `Relationships:\n`;
+                    for (const rel of tableSchema.relationships) {
+                        context += `  - ${rel.direction}: ${rel.table_name} (${rel.relationship_type})\n`;
+                    }
+                }
+
+                // Add sample data
+                try {
+                    const maxSamples = DATABASE.MAX_SAMPLE_ROWS_PER_TABLE || 3;
+                    const sampleData = await this.queryData(dbName, tableName, { limit: maxSamples });
+
+                    if (sampleData.success && sampleData.data.length > 0) {
+                        context += `Sample data (${sampleData.data.length} rows):\n`;
+                        context += '```json\n';
+                        context += JSON.stringify(sampleData.data, null, 2);
+                        context += '\n```\n';
+                    }
+                } catch (e) {
+                    // Skip sample data if query fails
+                }
+
+                context += '\n';
+            }
+
+            if (tableNames.length > maxTables) {
+                context += `\n... and ${tableNames.length - maxTables} more tables.\n`;
+            }
+
+            return { success: true, context };
+        } catch (error) {
+            logger.error('Failed to build schema context', { dbName, error });
+            return { success: false, error: error.message };
         }
     }
 

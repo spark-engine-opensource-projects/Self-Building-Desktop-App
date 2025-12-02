@@ -1,7 +1,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
-// Default database name for simplified API
-const DEFAULT_DB = 'app';
+// Default database name for simplified API - shared across all apps
+const DEFAULT_DB = 'shared';
 
 /**
  * Transform array-based schema to object-based schema
@@ -196,6 +196,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
     },
 
     /**
+     * Drop (delete) a table from the default database
+     * @param {string} tableName - Name of the table to drop
+     * @returns {Promise<{success: boolean, table?: string, error?: string}>}
+     */
+    dropTable: (tableName) => {
+        return ipcRenderer.invoke('db-drop-table', {
+            dbName: DEFAULT_DB,
+            tableName
+        });
+    },
+
+    /**
      * Execute raw SQL query on the default database
      * @param {string} sql - SQL query to execute
      * @param {Array} params - Optional parameters for prepared statement
@@ -223,6 +235,101 @@ contextBridge.exposeInMainWorld('electronAPI', {
     dbGenerateSchema: (description) => ipcRenderer.invoke('db-generate-schema', description),
     dbGenerateDatabaseScript: (description) => ipcRenderer.invoke('db-generate-database-script', description),
     dbSuggestImprovements: (schema, context) => ipcRenderer.invoke('db-suggest-improvements', { schema, context }),
+
+    // ============================================================
+    // MULTI-APP REGISTRY API
+    // For managing multiple apps sharing the same database
+    // ============================================================
+
+    /**
+     * Register a new app in the shared database
+     * @param {string} appId - Unique identifier for the app
+     * @param {string} appName - Display name for the app
+     * @param {string} description - Description of what the app does
+     * @returns {Promise<{success: boolean, app?: Object, error?: string}>}
+     */
+    registerApp: (appId, appName, description) => {
+        return ipcRenderer.invoke('db-register-app', { appId, appName, description });
+    },
+
+    /**
+     * Get information about a registered app
+     * @param {string} appId - The app's unique identifier
+     * @returns {Promise<{success: boolean, app?: Object, error?: string}>}
+     */
+    getAppInfo: (appId) => {
+        return ipcRenderer.invoke('db-get-app-info', appId);
+    },
+
+    /**
+     * List all registered apps
+     * @returns {Promise<{success: boolean, apps?: Array, error?: string}>}
+     */
+    listApps: () => {
+        return ipcRenderer.invoke('db-list-apps');
+    },
+
+    /**
+     * Get all table schemas from the shared database
+     * @returns {Promise<{success: boolean, schemas?: Object, error?: string}>}
+     */
+    getAllSchemas: () => {
+        return ipcRenderer.invoke('db-get-all-schemas');
+    },
+
+    /**
+     * Get formatted schema context for AI prompts
+     * Includes table structures, sample data, and relationships
+     * @returns {Promise<{success: boolean, context?: string, error?: string}>}
+     */
+    getSchemaContext: () => {
+        return ipcRenderer.invoke('db-get-schema-context');
+    },
+
+    /**
+     * Get tables related to a specific table
+     * @param {string} tableName - The table to find relationships for
+     * @returns {Promise<{success: boolean, related?: Array, error?: string}>}
+     */
+    getRelatedTables: (tableName) => {
+        return ipcRenderer.invoke('db-get-related-tables', tableName);
+    },
+
+    /**
+     * Create a table with ownership tracking
+     * @param {string} tableName - Name of the table
+     * @param {Object} schema - Table schema
+     * @param {string} appId - The app that owns this table
+     * @param {string} description - Description of the table's purpose
+     * @returns {Promise<{success: boolean, table?: string, error?: string}>}
+     */
+    createTableWithOwner: (tableName, schema, appId, description) => {
+        const transformedSchema = transformSchema(schema);
+        return ipcRenderer.invoke('db-create-table-with-owner', {
+            dbName: DEFAULT_DB,
+            tableName,
+            schema: transformedSchema,
+            appId,
+            description
+        });
+    },
+
+    /**
+     * Record a relationship between tables
+     * @param {string} sourceTable - The source table name
+     * @param {string} targetTable - The target table name
+     * @param {string} relationshipType - Type of relationship (e.g., 'foreign_key', 'references')
+     * @param {string} description - Description of the relationship
+     * @returns {Promise<{success: boolean, error?: string}>}
+     */
+    recordTableRelationship: (sourceTable, targetTable, relationshipType, description) => {
+        return ipcRenderer.invoke('db-record-relationship', {
+            sourceTable,
+            targetTable,
+            relationshipType,
+            description
+        });
+    },
     
     // Database-driven Code Generation
     dbGenerateCodeWithData: (prompt, dbName, includeData) => ipcRenderer.invoke('db-generate-code-with-data', { prompt, dbName, includeData }),

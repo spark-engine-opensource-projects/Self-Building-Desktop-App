@@ -21,6 +21,7 @@ const secureStorage = require('./utils/secureStorage');
 const performanceMonitor = require('./utils/performanceMonitor');
 const DatabaseManager = require('./utils/databaseManager');
 const AISchemaGenerator = require('./utils/aiSchemaGenerator');
+const SchemaContextBuilder = require('./utils/schemaContextBuilder');
 const { autoUpdater } = require('electron-updater');
 const { RateLimiter } = require('./utils/rateLimiter');
 const PerformanceDashboard = require('./modules/PerformanceDashboard');
@@ -100,6 +101,7 @@ class DynamicAppBuilder {
         this.allowedPackages = CONSTANTS.ALLOWED_PACKAGES;
         this.activeSessions = new Map();
         this.databaseManager = new DatabaseManager();
+        this.schemaContextBuilder = new SchemaContextBuilder(this.databaseManager);
         this.aiSchemaGenerator = null;
         this.performanceDashboard = new PerformanceDashboard();
         this.codeGenerationModule = null;
@@ -185,6 +187,9 @@ class DynamicAppBuilder {
 
         // Initialize database manager
         await this.databaseManager.initialize();
+
+        // Initialize shared database with registry tables for multi-app support
+        await this.databaseManager.initializeSharedDatabase();
 
         // Try to restore API key from secure storage
         await this.restoreApiKeyFromSecureStorage();
@@ -804,6 +809,91 @@ class DynamicAppBuilder {
             }
         });
 
+        // ============================================================
+        // Multi-App Registry IPC Handlers
+        // ============================================================
+
+        ipcMain.handle('db-register-app', async (event, { appId, appName, description }) => {
+            try {
+                return await this.databaseManager.registerApp(appId, appName, description);
+            } catch (error) {
+                logger.error('Failed to register app', error);
+                return { success: false, error: error.message };
+            }
+        });
+
+        ipcMain.handle('db-get-app-info', async (event, appId) => {
+            try {
+                return await this.databaseManager.getAppInfo(appId);
+            } catch (error) {
+                logger.error('Failed to get app info', error);
+                return { success: false, error: error.message };
+            }
+        });
+
+        ipcMain.handle('db-list-apps', async () => {
+            try {
+                return await this.databaseManager.listApps();
+            } catch (error) {
+                logger.error('Failed to list apps', error);
+                return { success: false, error: error.message };
+            }
+        });
+
+        ipcMain.handle('db-get-all-schemas', async () => {
+            try {
+                return await this.databaseManager.getAllSchemas();
+            } catch (error) {
+                logger.error('Failed to get all schemas', error);
+                return { success: false, error: error.message };
+            }
+        });
+
+        ipcMain.handle('db-get-schema-context', async () => {
+            try {
+                return await this.databaseManager.buildSchemaContext();
+            } catch (error) {
+                logger.error('Failed to build schema context', error);
+                return { success: false, error: error.message };
+            }
+        });
+
+        ipcMain.handle('db-get-related-tables', async (event, tableName) => {
+            try {
+                return await this.databaseManager.getRelatedTables(tableName);
+            } catch (error) {
+                logger.error('Failed to get related tables', error);
+                return { success: false, error: error.message };
+            }
+        });
+
+        ipcMain.handle('db-create-table-with-owner', async (event, { dbName, tableName, schema, appId, description }) => {
+            try {
+                return await this.databaseManager.createTableWithOwner(dbName, tableName, schema, appId, description);
+            } catch (error) {
+                logger.error('Failed to create table with owner', error);
+                return { success: false, error: error.message };
+            }
+        });
+
+        ipcMain.handle('db-record-relationship', async (event, { sourceTable, targetTable, relationshipType, description }) => {
+            try {
+                return await this.databaseManager.recordTableRelationship(sourceTable, targetTable, relationshipType, description);
+            } catch (error) {
+                logger.error('Failed to record table relationship', error);
+                return { success: false, error: error.message };
+            }
+        });
+
+        ipcMain.handle('db-drop-table', async (event, { dbName, tableName }) => {
+            try {
+                return await this.databaseManager.dropTable(dbName, tableName);
+            } catch (error) {
+                logger.error('Failed to drop table', error);
+                return { success: false, error: error.message };
+            }
+        });
+
         // AI Schema Generation IPC Handlers
         ipcMain.handle('db-generate-schema', async (event, description) => {
             try {
@@ -1011,6 +1101,21 @@ Please generate code that can interact with this database structure. Use the pro
         }
 
         try {
+            // Enhance prompt with database schema context for multi-app awareness
+            let enhancedPrompt = prompt;
+            try {
+                const schemaContext = await this.schemaContextBuilder.buildPromptAwareContext(prompt);
+                if (schemaContext) {
+                    enhancedPrompt = `${prompt}\n\n${schemaContext}`;
+                    logger.info('Enhanced prompt with schema context', {
+                        originalLength: prompt.length,
+                        enhancedLength: enhancedPrompt.length
+                    });
+                }
+            } catch (contextError) {
+                logger.warn('Failed to build schema context, proceeding without it', { error: contextError.message });
+            }
+
             // TEMP: Commented out resource check - too strict for development
             // const resourceCheck = await systemMonitor.checkResourceLimits();
             // if (!resourceCheck.safe) {
@@ -1018,7 +1123,7 @@ Please generate code that can interact with this database structure. Use the pro
             //     return { success: false, error: 'System resources insufficient for code generation' };
             // }
 
-            const result = await this.attemptCodeGeneration(prompt, retryCount, startTime);
+            const result = await this.attemptCodeGeneration(enhancedPrompt, retryCount, startTime);
             
             // Cache successful results (only for initial requests)
             if (result.success && retryCount === 0) {
