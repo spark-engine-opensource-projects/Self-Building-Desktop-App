@@ -118,6 +118,52 @@ class DynamicAppBuilder {
     }
 
     /**
+     * Fix quote conflicts in generated code
+     * Only fixes simple cases - avoids breaking template literals with expressions
+     * @param {string} code - The generated code
+     * @returns {string} - Fixed code
+     */
+    fixQuoteConflicts(code) {
+        let fixed = code;
+
+        // IMPORTANT: Only fix attributes that DON'T contain template expressions ${}
+        // Converting type='${...}' to type="${...}" will break the code!
+
+        // Helper function to safely convert quotes only if no template expressions
+        const safeConvertQuotes = (attrName) => {
+            const pattern = new RegExp(`${attrName}='([^']*)'`, 'g');
+            fixed = fixed.replace(pattern, (match, value) => {
+                // DON'T convert if it contains template expressions or double quotes
+                if (value.includes('${') || value.includes('"')) {
+                    return match; // Leave as-is
+                }
+                return `${attrName}="${value}"`;
+            });
+        };
+
+        // Only fix simple static attributes (no template expressions)
+        safeConvertQuotes('style');
+        safeConvertQuotes('class');
+        safeConvertQuotes('id');
+        safeConvertQuotes('type');
+        safeConvertQuotes('placeholder');
+        safeConvertQuotes('value');
+        safeConvertQuotes('href');
+        safeConvertQuotes('src');
+        safeConvertQuotes('name');
+        safeConvertQuotes('data-id');
+
+        if (fixed !== code) {
+            logger.info('Fixed quote conflicts in generated code', {
+                originalLength: code.length,
+                fixedLength: fixed.length
+            });
+        }
+
+        return fixed;
+    }
+
+    /**
      * Initialize the application and all required services
      * @async
      * @returns {Promise<void>}
@@ -989,101 +1035,99 @@ Please generate code that can interact with this database structure. Use the pro
     async attemptCodeGeneration(prompt, retryCount, startTime) {
         try {
             const aiConfig = configManager.get('ai');
-            const systemPrompt = `You are an advanced UI component generation assistant. Generate complete, production-ready, interactive web components for desktop applications.
+            const systemPrompt = `You are a UI component generator for an Electron desktop app. Generate complete, working JavaScript code.
 
-Respond with ONLY a valid JSON object in this EXACT format - NO markdown, NO explanations, ONLY the JSON:
+Respond with ONLY a valid JSON object - NO markdown, NO explanations:
 {
   "packages": [],
-  "code": "your complete JavaScript code here",
-  "description": "Brief description of the component functionality"
+  "code": "your JavaScript code here",
+  "description": "Brief description"
 }
 
-CRITICAL JSON FORMATTING RULES:
-1. In your JavaScript code, ALWAYS use SINGLE quotes (') for HTML attributes, NEVER double quotes (")
-2. Example: innerHTML = \`<div class='container' id='main'>\` ✓ CORRECT
-3. Example: innerHTML = \`<div class="container" id="main">\` ✗ WRONG - breaks JSON!
-4. The JSON "code" value uses double quotes, so any double quotes inside must be escaped with \\
+CRITICAL - CODE PATTERN:
+Use a simple async IIFE pattern. DO NOT use Custom Elements (class extends HTMLElement).
 
-Example of correct JSON response:
-{
-  "packages": [],
-  "code": "class MyComponent extends HTMLElement {\\n  constructor() {\\n    super();\\n    this.innerHTML = '<div class=\\'main\\'>Hello</div>';\\n  }\\n}\\ncustomElements.define('my-component', MyComponent);",
-  "description": "A simple component"
-}
+CORRECT PATTERN:
+(async () => {
+  const root = document.getElementById('execution-root');
 
-CRITICAL REQUIREMENTS:
+  root.innerHTML = \\\`
+    <div class="container">
+      <h1>Title</h1>
+      <button id="myBtn">Click</button>
+    </div>
+  \\\`;
 
-🏗️ ARCHITECTURE:
-- Generate complete, self-contained UI components
-- Use modern JavaScript (ES6+) with proper DOM manipulation
-- Create responsive, accessible, and visually appealing interfaces
-- Include comprehensive error handling and input validation
-- Implement proper event delegation and cleanup
-- IMPORTANT: After defining a custom element, ALWAYS create an instance and append it to the 'execution-root' div
-- Example: const root = document.getElementById('execution-root'); root.innerHTML = ''; root.appendChild(document.createElement('your-element-name'));
+  document.getElementById('myBtn').addEventListener('click', () => {
+    alert('Clicked!');
+  });
+})();
 
-🎨 STYLING:
-- Use inline styles or inject CSS via <style> elements
-- Follow modern design principles (clean, minimal, intuitive)
-- Ensure mobile-responsive design (use flexbox/grid)
-- Include hover states, transitions, and micro-interactions
-- Use consistent color scheme and typography
+FORBIDDEN - DO NOT USE:
+- class MyApp extends HTMLElement (causes constructor errors)
+- customElements.define() (causes constructor errors)
+- attachShadow() (causes constructor errors)
+- localStorage or sessionStorage (use database API instead)
 
-🔒 SECURITY & VALIDATION:
-- Sanitize all user inputs
-- Validate data types and ranges
-- Include proper error messages and user feedback
-- Handle edge cases gracefully
-- Prevent XSS and injection vulnerabilities
+DATABASE API - For data persistence, use:
+- await window.electronAPI.createTable(tableName, { columns: ['col1', 'col2'] })
+- await window.electronAPI.insertData(tableName, { col1: 'value1', col2: 'value2' })
+- await window.electronAPI.queryData(tableName) // returns array of objects
+- await window.electronAPI.updateData(tableName, id, { col1: 'newValue' })
+- await window.electronAPI.deleteData(tableName, id)
 
-♿ ACCESSIBILITY:
-- Include ARIA labels and roles
-- Ensure keyboard navigation support
-- Use semantic HTML elements
-- Provide screen reader compatibility
-- Include focus indicators
+DATABASE EXAMPLE:
+(async () => {
+  const root = document.getElementById('execution-root');
 
-📱 EXAMPLES:
+  await window.electronAPI.createTable('tasks', { columns: ['title', 'done'] });
 
-1. DATA CALCULATOR:
-   - Input fields with validation
-   - Real-time calculation display
-   - Error handling and user feedback
-   - Professional styling with animations
+  async function loadTasks() {
+    const tasks = await window.electronAPI.queryData('tasks');
+    renderTasks(tasks);
+  }
 
-2. INTERACTIVE DASHBOARD:
-   - Data visualization components
-   - Filter and search functionality
-   - Responsive grid layout
-   - Loading states and transitions
+  function renderTasks(tasks) {
+    const list = document.getElementById('taskList');
+    list.innerHTML = tasks.map(t => \\\`<li>\${t.title}</li>\\\`).join('');
+  }
 
-3. FORM COMPONENTS:
-   - Multi-step forms with validation
-   - Dynamic field generation
-   - Progress indicators
-   - Submission handling
+  root.innerHTML = \\\`
+    <div class="container">
+      <input type="text" id="taskInput" placeholder="New task">
+      <button id="addBtn">Add</button>
+      <ul id="taskList"></ul>
+    </div>
+  \\\`;
 
-4. CONTENT MANAGEMENT:
-   - CRUD operations interface
-   - Drag-and-drop functionality
-   - Modal dialogs and confirmations
-   - Data persistence simulation
+  document.getElementById('addBtn').addEventListener('click', async () => {
+    const input = document.getElementById('taskInput');
+    if (input.value.trim()) {
+      await window.electronAPI.insertData('tasks', { title: input.value, done: false });
+      input.value = '';
+      loadTasks();
+    }
+  });
 
-🚀 PERFORMANCE:
-- Optimize DOM operations
-- Use event delegation
-- Implement debouncing for inputs
-- Minimize reflows and repaints
-- Include loading states for async operations
+  loadTasks();
+})();
 
-CODE STRUCTURE:
-- Start with container creation
-- Define styles first, then HTML structure
-- Add event handlers and functionality
-- Include initialization and cleanup
-- End with DOM insertion
+JSON STRING RULES:
+- Use backticks (\\\`) for template literals containing HTML
+- Use double quotes for HTML attributes: class="container"
+- Escape special characters in the JSON string
 
-NO COMMENTS in code - make it self-explanatory through good naming and structure.`;
+STYLING:
+- Inject a <style> tag or use inline styles
+- Use flexbox/grid for layouts
+- Include hover states and transitions
+
+REQUIREMENTS:
+- Self-contained, complete code
+- Error handling with try/catch
+- Input validation
+- Event delegation where appropriate
+- NO comments in code`;
 
             const response = await this.anthropic.messages.create({
                 model: aiConfig.model,
@@ -1185,7 +1229,72 @@ NO COMMENTS in code - make it self-explanatory through good naming and structure
             }
 
             const result = parseResult.data;
-            
+
+            // FIX QUOTE CONFLICTS: Convert single-quoted HTML strings to template literals
+            // This fixes errors like "Unexpected identifier 'padding'" caused by:
+            // innerHTML = '<div style='padding: 10px;'>' (wrong - nested quotes)
+            result.code = this.fixQuoteConflicts(result.code);
+
+            // CRITICAL: Reject Custom Elements - they cause constructor errors
+            const customElementPatterns = [
+                /extends\s+HTMLElement/i,
+                /customElements\s*\.\s*define/i,
+                /class\s+\w+\s+extends\s+\w*Element/i,
+                /attachShadow\s*\(/i
+            ];
+            const hasCustomElement = customElementPatterns.some(p => p.test(result.code));
+
+            if (hasCustomElement) {
+                logger.warn('Generated code uses Custom Elements - REJECTING', {
+                    prompt: prompt.substring(0, 100)
+                });
+
+                if (retryCount < 2) {
+                    const modifiedPrompt = `CRITICAL: DO NOT use Custom Elements (class extends HTMLElement). Use a simple IIFE pattern with innerHTML instead.
+
+WRONG - Custom Elements (will be rejected):
+class MyApp extends HTMLElement { ... }
+customElements.define('my-app', MyApp);
+
+CORRECT - Simple IIFE pattern:
+(async () => {
+  const root = document.getElementById('execution-root');
+  root.innerHTML = \`<div class="container">...</div>\`;
+  // Add event listeners...
+})();
+
+${prompt}`;
+                    return await this.generateCodeWithRetry(modifiedPrompt, retryCount + 1);
+                }
+
+                return {
+                    success: false,
+                    error: 'Generated code uses Custom Elements which cause errors. Please try again.',
+                    suggestions: ['The system will retry with a simpler code pattern']
+                };
+            }
+
+            // CRITICAL: Reject localStorage/sessionStorage - must use database
+            if (result.code.includes('localStorage') || result.code.includes('sessionStorage')) {
+                logger.warn('Generated code uses localStorage instead of database', { prompt });
+
+                if (retryCount < 2) {
+                    const modifiedPrompt = `CRITICAL: DO NOT use localStorage or sessionStorage. Use the database API instead:
+- await window.electronAPI.createTable(tableName, { columns: [...] })
+- await window.electronAPI.insertData(tableName, data)
+- await window.electronAPI.queryData(tableName)
+
+${prompt}`;
+                    return await this.generateCodeWithRetry(modifiedPrompt, retryCount + 1);
+                }
+
+                return {
+                    success: false,
+                    error: 'Code uses localStorage. Please use window.electronAPI database instead.',
+                    suggestions: ['Use window.electronAPI.createTable/insertData/queryData for data persistence']
+                };
+            }
+
             // Enhanced code validation and enhancement pipeline
             if (aiConfig.enableCodeValidation) {
                 const securityScan = securitySandbox.scanCode(result.code);

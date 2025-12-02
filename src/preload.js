@@ -5,22 +5,33 @@ const DEFAULT_DB = 'app';
 
 /**
  * Transform array-based schema to object-based schema
- * Converts: { columns: [{name: 'id', type: 'INTEGER', ...}] }
- * To:       { columns: {id: {type: 'integer', ...}} }
+ * Supports multiple input formats:
+ * 1. { columns: ['name1', 'name2'] } - array of strings (AI-generated simple format)
+ * 2. { columns: [{name: 'id', type: 'INTEGER', ...}] } - array of objects
+ * 3. { columns: {name: {type: 'string', ...}} } - object format (already correct)
  */
 function transformSchema(schema) {
     if (!schema || !schema.columns) return schema;
 
-    // If columns is already an object, return as-is
+    // If columns is already an object (not array), return as-is
     if (!Array.isArray(schema.columns)) return schema;
 
     const transformedColumns = {};
     for (const col of schema.columns) {
+        // Handle simple string format: ['name1', 'name2']
+        if (typeof col === 'string') {
+            transformedColumns[col] = { type: 'string' }; // Default to TEXT/string
+            continue;
+        }
+
+        // Handle object format: [{name: 'id', type: 'INTEGER', ...}]
         const { name, ...rest } = col;
         if (name) {
             // Convert type to lowercase for consistency
             if (rest.type) {
                 rest.type = rest.type.toLowerCase();
+            } else {
+                rest.type = 'string'; // Default type
             }
             transformedColumns[name] = rest;
         }
@@ -123,20 +134,27 @@ contextBridge.exposeInMainWorld('electronAPI', {
      * Query data from a table
      * @param {string} tableName - Name of the table
      * @param {Object} options - Query options (where, orderBy, limit, offset)
-     * @returns {Promise<{success: boolean, data?: Array, error?: string}>}
+     * @returns {Promise<Array>} - Returns array of rows directly (empty array if no data)
      * @example
-     * const result = await window.electronAPI.queryData('todos', {
+     * const todos = await window.electronAPI.queryData('todos', {
      *   where: {completed: 0},
      *   orderBy: 'id DESC',
      *   limit: 10
      * });
+     * // todos is an array: [{id: 1, task: 'Buy milk'}, ...]
      */
-    queryData: (tableName, options = {}) => {
-        return ipcRenderer.invoke('db-query-data', {
+    queryData: async (tableName, options = {}) => {
+        const result = await ipcRenderer.invoke('db-query-data', {
             dbName: DEFAULT_DB,
             tableName,
             options
         });
+        // Return the data array directly for simpler AI-generated code
+        // If there's an error or no data, return empty array
+        if (result && result.success && Array.isArray(result.data)) {
+            return result.data;
+        }
+        return [];
     },
 
     /**

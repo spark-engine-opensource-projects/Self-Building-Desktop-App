@@ -109,27 +109,12 @@ class CodeEnhancer {
      * Enhances JavaScript code with error handling
      */
     addErrorHandling(code) {
-        // Add try-catch blocks around potentially dangerous operations
-        // Note: localStorage/sessionStorage removed - code using them should be rejected upstream
-        // The simple regex patterns can't handle nested parentheses properly
-        const dangerousPatterns = [
-            /document\.querySelector\(['"][^'"]+['"]\)/g,
-            /document\.getElementById\(['"][^'"]+['"]\)/g,
-            /JSON\.parse\([^)]+\)/g
-        ];
-
-        let enhancedCode = code;
-
-        dangerousPatterns.forEach(pattern => {
-            enhancedCode = enhancedCode.replace(pattern, (match) => {
-                if (match.includes('try') || match.includes('catch')) {
-                    return match; // Already has error handling
-                }
-                return `(function() { try { return ${match}; } catch(e) { console.warn('Operation failed:', e.message); return null; } })()`;
-            });
-        });
-
-        return enhancedCode;
+        // DISABLED: The try-catch wrapping causes more problems than it solves
+        // - Simple regex patterns can't handle nested parentheses (e.g., JSON.parse(localStorage.getItem('x')))
+        // - The wrapping creates syntax errors when patterns don't match correctly
+        // - Generated code should handle its own errors
+        // Just return the code unmodified
+        return code;
     }
 
     /**

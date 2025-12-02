@@ -165,9 +165,87 @@ class CodeGenerationModule {
             // This causes "Unexpected identifier" syntax errors
             result.code = this.fixQuoteConflicts(result.code);
 
-            // Fix Custom Elements that call init/render from constructor
-            // This causes "Failed to construct 'CustomElement': The result must not have children"
-            result.code = this.fixCustomElementConstructor(result.code);
+            // CRITICAL: Detect quote conflicts that couldn't be fixed and auto-retry
+            // Pattern: single-quoted HTML with single-quoted attributes like: '<div style='...'>'
+            // These cause "Unexpected identifier" syntax errors
+            const quoteConflictPattern = /'<[^']*\s+\w+='[^']*'[^']*>'/;
+            if (quoteConflictPattern.test(result.code)) {
+                logger.warn('Generated code has quote conflicts - REJECTING and will retry', {
+                    prompt: prompt.substring(0, 100),
+                    retryCount
+                });
+
+                if (retryCount < 2) {
+                    const modifiedPrompt = `CRITICAL FORMATTING REQUIREMENT: Use ONLY backticks (\`) for ALL HTML strings, and double quotes (") for ALL HTML attributes. NEVER use single quotes for HTML.
+
+Example of CORRECT code:
+element.innerHTML = \`<div class="container" style="padding: 20px;">Content</div>\`;
+
+Example of WRONG code (DO NOT DO THIS):
+element.innerHTML = '<div style='padding: 20px;'>Content</div>';
+
+${prompt}`;
+                    logger.info('Auto-retrying with quote formatting emphasis', { retryCount: retryCount + 1 });
+                    return await this.generateCode(modifiedPrompt, retryCount + 1);
+                }
+
+                return {
+                    success: false,
+                    error: 'Generated code has quote formatting issues. Please try again.',
+                    suggestions: [
+                        'The system will automatically retry with better formatting',
+                        'Try a simpler description'
+                    ]
+                };
+            }
+
+            // CRITICAL: Reject Custom Elements - they cause constructor errors that can't be reliably fixed
+            // Auto-retry up to 2 times with stronger prompt emphasis
+            // Use regex to handle whitespace variations (newlines, multiple spaces, etc.)
+            const customElementPatterns = [
+                /extends\s+HTMLElement/i,
+                /customElements\s*\.\s*define/i,
+                /class\s+\w+\s+extends\s+\w*Element/i,  // catches any *Element extension
+                /attachShadow\s*\(/i,  // Shadow DOM is also problematic
+                /this\.shadowRoot/i
+            ];
+
+            // DEBUG: Log what we're checking
+            logger.info('Checking for Custom Elements in generated code', {
+                codeLength: result.code.length,
+                codeSnippet: result.code.substring(0, 500),
+                hasExtends: result.code.includes('extends'),
+                hasHTMLElement: result.code.includes('HTMLElement'),
+                hasCustomElements: result.code.includes('customElements')
+            });
+
+            const hasCustomElement = customElementPatterns.some(pattern => pattern.test(result.code));
+
+            if (hasCustomElement) {
+                logger.warn('Generated code uses Custom Elements - REJECTING and will retry', {
+                    prompt: prompt.substring(0, 100),
+                    retryCount,
+                    matchedPatterns: customElementPatterns.filter(p => p.test(result.code)).map(p => p.toString())
+                });
+
+                // If we haven't retried too many times, auto-retry with stronger emphasis
+                if (retryCount < 2) {
+                    const modifiedPrompt = `CRITICAL: DO NOT use Custom Elements (class extends HTMLElement). Use the simple IIFE pattern instead.\n\n${prompt}`;
+                    logger.info('Auto-retrying without Custom Elements', { retryCount: retryCount + 1 });
+                    return await this.generateCode(modifiedPrompt, retryCount + 1);
+                }
+
+                // If we've already retried, return error
+                return {
+                    success: false,
+                    error: 'Generated code uses Custom Elements which cause errors. Please try a different description.',
+                    suggestions: [
+                        'Try using simpler language in your description',
+                        'Avoid mentioning "components" or "elements"',
+                        'The system will generate code using a simpler pattern'
+                    ]
+                };
+            }
 
             // Validate that code uses real APIs, not fictional ones
             // CRITICAL: This validation MUST catch any made-up API methods
@@ -405,6 +483,18 @@ class CodeGenerationModule {
 
 IMPORTANT: The "packages" array should almost always be empty [] - the app runs in Electron with no npm install capability.
 
+=== #1 CRITICAL RULE: HTML STRING FORMATTING - VIOLATION = SYNTAX ERROR ===
+
+NEVER use single quotes for HTML strings! This WILL cause "Unexpected identifier" errors:
+BAD:  '<div style='color: red;'>text</div>'   // SYNTAX ERROR - WILL CRASH!
+BAD:  '<button class='btn'>Click</button>'    // SYNTAX ERROR - WILL CRASH!
+
+ALWAYS use backticks (\`) for HTML with double quotes (") for attributes:
+GOOD: \`<div style="color: red;">text</div>\`   // CORRECT
+GOOD: \`<button class="btn">Click</button>\`    // CORRECT
+
+This applies to ALL innerHTML, insertAdjacentHTML, and any HTML string assignment.
+
 === CRITICAL DATABASE RULES - VIOLATION WILL CAUSE REJECTION ===
 
 1. This app has a DATABASE SYSTEM built-in - USE IT!
@@ -522,12 +612,17 @@ Rules:
 3. NEVER use single-quoted strings for HTML - they WILL break on style/class attributes
 4. This applies to ALL HTML generation, not just innerHTML
 
-=== DO NOT USE CUSTOM ELEMENTS - USE IIFE INSTEAD ===
+=== #2 CRITICAL RULE: NO CUSTOM ELEMENTS - VIOLATION = AUTOMATIC REJECTION ===
 
-IMPORTANT: DO NOT use Custom Elements (class extends HTMLElement). They cause frequent errors.
-ALWAYS use the simple IIFE pattern instead - it's more reliable and easier to debug.
+NEVER use Custom Elements. Code using them will be AUTOMATICALLY REJECTED:
+- NO "class X extends HTMLElement" - REJECTED!
+- NO "customElements.define()" - REJECTED!
+- NO "attachShadow()" - REJECTED!
+- NO "this.shadowRoot" - REJECTED!
 
-BAD - Custom Elements (DO NOT USE):
+ALWAYS use the simple IIFE pattern - it's the ONLY pattern that works reliably.
+
+REJECTED - Custom Elements (code will be thrown away):
 class MyApp extends HTMLElement {
   constructor() {
     super();
@@ -847,51 +942,129 @@ async function loadPage(page) {
      */
     fixCustomElementConstructor(code) {
         try {
-            // Check if code has Custom Element with problematic constructor
-            const customElementPattern = /class\s+(\w+)\s+extends\s+HTMLElement\s*\{[\s\S]*?constructor\s*\(\s*\)\s*\{[\s\S]*?super\s*\(\s*\)\s*;([\s\S]*?)\}/;
-            const match = code.match(customElementPattern);
-
-            if (match) {
-                const className = match[1];
-                const constructorBody = match[2];
-
-                // Look for problematic calls in constructor (init, render, loadData, attachEventListeners, etc.)
-                const problematicCalls = constructorBody.match(/this\.(init|render|loadData|attachEventListeners|setup|build|create|load)\s*\(\s*\)/g);
-
-                if (problematicCalls && problematicCalls.length > 0) {
-                    logger.warn('Detected Custom Element with DOM operations in constructor', {
-                        className,
-                        problematicCalls
-                    });
-
-                    // Check if connectedCallback already exists
-                    const hasConnectedCallback = /connectedCallback\s*\(\s*\)\s*\{/.test(code);
-
-                    if (!hasConnectedCallback) {
-                        // Remove the problematic calls from constructor
-                        let fixedCode = code;
-                        problematicCalls.forEach(call => {
-                            // Remove the call and any trailing semicolon/newline
-                            fixedCode = fixedCode.replace(new RegExp(call.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*;?\\s*', 'g'), '');
-                        });
-
-                        // Add connectedCallback with the moved calls
-                        const callsToMove = problematicCalls.map(c => '    ' + c + ';').join('\n');
-                        const connectedCallback = `\n  connectedCallback() {\n${callsToMove}\n  }\n`;
-
-                        // Insert connectedCallback after constructor
-                        fixedCode = fixedCode.replace(
-                            /(constructor\s*\(\s*\)\s*\{[\s\S]*?super\s*\(\s*\)\s*;[\s\S]*?\})/,
-                            '$1' + connectedCallback
-                        );
-
-                        logger.info('Fixed Custom Element constructor - moved DOM operations to connectedCallback', { className });
-                        return fixedCode;
-                    }
-                }
+            // Check if code has Custom Element
+            if (!code.includes('extends HTMLElement')) {
+                return code;
             }
 
-            return code;
+            let fixedCode = code;
+
+            // Find all Custom Element class definitions
+            // Pattern: class ClassName extends HTMLElement { ... }
+            const classPattern = /class\s+(\w+)\s+extends\s+HTMLElement\s*\{/g;
+            let classMatch;
+
+            while ((classMatch = classPattern.exec(code)) !== null) {
+                const className = classMatch[1];
+                const classStartIndex = classMatch.index;
+
+                // Find the constructor within this class
+                // Need to find balanced braces to get the full constructor body
+                const afterClassStart = code.substring(classStartIndex);
+
+                // Find constructor
+                const constructorMatch = afterClassStart.match(/constructor\s*\(\s*\)\s*\{/);
+                if (!constructorMatch) continue;
+
+                const constructorStart = constructorMatch.index + constructorMatch[0].length;
+
+                // Find the matching closing brace for constructor
+                let braceCount = 1;
+                let constructorEnd = constructorStart;
+                for (let i = constructorStart; i < afterClassStart.length && braceCount > 0; i++) {
+                    if (afterClassStart[i] === '{') braceCount++;
+                    if (afterClassStart[i] === '}') braceCount--;
+                    constructorEnd = i;
+                }
+
+                const constructorBody = afterClassStart.substring(constructorStart, constructorEnd);
+
+                // Check for problematic code in constructor - anything that manipulates DOM
+                // Look for: this.render(), this.init(), this.innerHTML =, this.appendChild, etc.
+                const problematicPatterns = [
+                    /this\.\w+\s*\(\s*\)/g,  // Any method call on this
+                    /this\.innerHTML\s*=/g,
+                    /this\.appendChild/g,
+                    /this\.insertAdjacentHTML/g,
+                    /this\.textContent\s*=/g,
+                    /this\.innerText\s*=/g,
+                ];
+
+                // But allow: super(), this.property = value (simple assignment)
+                const allowedPatterns = [
+                    /super\s*\(\s*\)/,
+                    /this\.\w+\s*=\s*(?!.*\()/,  // Simple property assignment without method call
+                ];
+
+                // Extract code after super()
+                const superMatch = constructorBody.match(/super\s*\(\s*\)\s*;?/);
+                if (!superMatch) continue;
+
+                const afterSuper = constructorBody.substring(superMatch.index + superMatch[0].length).trim();
+
+                if (!afterSuper) continue;  // Nothing after super(), no problem
+
+                // Check if there's any DOM manipulation
+                let hasDOMManipulation = false;
+                for (const pattern of problematicPatterns) {
+                    if (pattern.test(afterSuper)) {
+                        hasDOMManipulation = true;
+                        break;
+                    }
+                }
+
+                if (!hasDOMManipulation) continue;
+
+                logger.warn('Detected Custom Element with DOM operations in constructor', {
+                    className,
+                    afterSuper: afterSuper.substring(0, 100)
+                });
+
+                // Check if connectedCallback already exists
+                const hasConnectedCallback = /connectedCallback\s*\(\s*\)\s*\{/.test(afterClassStart);
+
+                // Remove everything after super() from constructor
+                const originalConstructor = afterClassStart.substring(
+                    constructorMatch.index,
+                    constructorEnd + 1
+                );
+
+                const cleanedConstructor = originalConstructor.replace(
+                    /(super\s*\(\s*\)\s*;?)[\s\S]*?\}/,
+                    '$1\n  }'
+                );
+
+                // Prepare the code to move
+                const codeToMove = afterSuper;
+
+                if (hasConnectedCallback) {
+                    // Append to existing connectedCallback
+                    fixedCode = fixedCode.replace(
+                        originalConstructor,
+                        cleanedConstructor
+                    );
+                    // Add code at the beginning of connectedCallback
+                    fixedCode = fixedCode.replace(
+                        /(connectedCallback\s*\(\s*\)\s*\{)/,
+                        `$1\n    // Moved from constructor\n    ${codeToMove}\n`
+                    );
+                } else {
+                    // Create new connectedCallback
+                    const connectedCallback = `\n  connectedCallback() {\n    ${codeToMove}\n  }\n`;
+
+                    fixedCode = fixedCode.replace(
+                        originalConstructor,
+                        cleanedConstructor + connectedCallback
+                    );
+                }
+
+                logger.info('Fixed Custom Element constructor - moved DOM operations to connectedCallback', {
+                    className,
+                    movedCode: codeToMove.substring(0, 50)
+                });
+            }
+
+            return fixedCode;
         } catch (error) {
             logger.warn('Failed to fix Custom Element constructor', { error: error.message });
             return code;
@@ -902,46 +1075,278 @@ async function loadPage(page) {
      * Fix common quote conflicts in generated code
      * Converts single-quoted HTML strings to template literals when they contain
      * single-quoted HTML attributes (which cause syntax errors)
+     *
+     * The core problem: Claude generates code like:
+     *   element.innerHTML = '<div style='color: red;'>text</div>';
+     * This breaks because the inner ' ends the string early, making 'color' an identifier
      */
     fixQuoteConflicts(code) {
         try {
-            // Pattern to detect problematic single-quoted strings with HTML containing single-quoted attributes
-            // e.g., innerHTML = '<div style='...'>' - the inner single quotes break the string
+            let modified = false;
+            let fixedCode = code;
 
-            // Find all single-quoted string assignments that contain HTML-like content
-            // This regex looks for patterns like: = '<...style='...' or = '<...class='...
-            const problemPattern = /=\s*'<[^']*[a-zA-Z]+='[^']*'[^']*>'/g;
+            // STEP 0 (AGGRESSIVE PRE-FIX): Detect the broken pattern directly
+            // When Claude generates: innerHTML = '<div style='color: red;'>text</div>';
+            // This becomes broken tokens. We can detect this by looking for:
+            // Pattern: ='<tag attr=' followed by value then '> then content then </tag>';
+            // This is a SPECIFIC fix for the most common broken pattern
 
-            if (problemPattern.test(code)) {
-                logger.warn('Detected quote conflict in generated code, attempting to fix');
+            // Fix pattern: = '<tag style='value'>content</tag>';
+            // Becomes: = `<tag style="value">content</tag>`;
+            fixedCode = fixedCode.replace(
+                /=\s*'<(\w+)([^>]*?)\s+(style|class|id|type|name|value|placeholder|href|src|data-\w+)='([^']*)'([^>]*)>([\s\S]*?)<\/\1>';/g,
+                (match, tag, preAttrs, attrName, attrValue, postAttrs, content) => {
+                    modified = true;
+                    return `=\`<${tag}${preAttrs} ${attrName}="${attrValue}"${postAttrs}>${content}</${tag}>\`;`;
+                }
+            );
 
-                // More targeted fix: convert assignments with HTML to use template literals
-                // Match: .innerHTML = '...' or = '<div...'
-                code = code.replace(
-                    /(\.innerHTML\s*=\s*)'([^']*(?:<[^>]+[a-zA-Z]+='[^']*'[^>]*>)[^']*)'/g,
-                    (match, prefix, content) => {
-                        // Convert single quotes in HTML attributes to double quotes
-                        const fixedContent = content.replace(/(<[^>]+[a-zA-Z]+)='([^']*)'([^>]*>)/g, '$1="$2"$3');
-                        return `${prefix}\`${fixedContent}\``;
+            // Also fix self-closing tags: = '<input type='text'/>';
+            fixedCode = fixedCode.replace(
+                /=\s*'<(\w+)([^>]*?)\s+(style|class|id|type|name|value|placeholder|href|src|data-\w+)='([^']*)'([^/>]*)\/?>';/g,
+                (match, tag, preAttrs, attrName, attrValue, postAttrs) => {
+                    modified = true;
+                    const selfClose = match.includes('/>') ? '/>' : '>';
+                    return `=\`<${tag}${preAttrs} ${attrName}="${attrValue}"${postAttrs}${selfClose}\`;`;
+                }
+            );
+
+            // Fix multiple attributes: = '<div style='x' class='y'>text</div>';
+            // This is trickier - handle sequentially
+            let iterations = 0;
+            const maxIterations = 10;
+            while (iterations < maxIterations) {
+                const beforeFix = fixedCode;
+                fixedCode = fixedCode.replace(
+                    /=\s*'(<[^']*?)\s+(\w+[-\w]*)='([^']*)'/g,
+                    (match, beforeAttr, attrName, attrValue) => {
+                        modified = true;
+                        return `= '${beforeAttr} ${attrName}="${attrValue}"`;
                     }
                 );
+                if (fixedCode === beforeFix) break;
+                iterations++;
+            }
 
-                // Also fix standalone string assignments that look like HTML
-                code = code.replace(
-                    /=\s*'(<[^']*[a-zA-Z]+='[^']*'[^']*>)'/g,
-                    (match, content) => {
-                        const fixedContent = content.replace(/(<[^>]+[a-zA-Z]+)='([^']*)'([^>]*>)/g, '$1="$2"$3');
-                        return `= \`${fixedContent}\``;
+            // Now convert remaining HTML single-quoted strings to template literals
+            fixedCode = fixedCode.replace(
+                /=\s*'(<[^']*>)'/g,
+                (match, content) => {
+                    if (content.includes('<') && content.includes('>')) {
+                        modified = true;
+                        return `=\`${content}\``;
                     }
-                );
+                    return match;
+                }
+            );
 
+            // Approach: Find HTML-like content that's malformed due to quote issues
+            // When we see: ='<tag  then look for the matching </tag>';
+
+            // Step 1: Convert all single-quoted HTML strings to template literals
+            // Match patterns like: = '<...'  where < suggests HTML
+            fixedCode = fixedCode.replace(
+                /(innerHTML|outerHTML|insertAdjacentHTML\s*\([^,]+,)\s*'(<[^']*(?:'[^']*'[^']*)*>)'/g,
+                (match, prefix, html) => {
+                    // Convert inner single quotes in attributes to double quotes
+                    let fixed = html.replace(/(\s)(\w+)='([^']*)'/g, '$1$2="$3"');
+                    modified = true;
+                    return `${prefix}\`${fixed}\``;
+                }
+            );
+
+            // Step 2: Fix standalone HTML strings in other contexts
+            // Match: '<tag attr='value'>content</tag>'
+            // This is tricky because the parser breaks at the first internal '
+
+            // Simpler approach: Find all single-quoted strings, check if they contain <
+            // If so, convert to template literal and fix internal quotes
+
+            // Use a state machine approach
+            const chars = fixedCode.split('');
+            const result = [];
+            let i = 0;
+
+            while (i < chars.length) {
+                // Look for potential HTML string: = '< or : '< or , '<
+                if (chars[i] === "'" &&
+                    i + 1 < chars.length &&
+                    chars[i + 1] === '<' &&
+                    (i === 0 || /[\s=:,(\[]/.test(chars[i - 1]))) {
+
+                    // Found start of HTML string, try to find its intended end
+                    // The end should be after a closing tag followed by ';
+                    const stringStart = i;
+                    i++; // Move past opening quote
+
+                    let content = '';
+                    let depth = 0;  // Track HTML tag depth
+                    let foundEnd = false;
+
+                    while (i < chars.length && !foundEnd) {
+                        // Track opening tags
+                        if (chars[i] === '<' && i + 1 < chars.length && chars[i + 1] !== '/') {
+                            depth++;
+                        }
+                        // Track closing tags
+                        if (chars[i] === '<' && i + 1 < chars.length && chars[i + 1] === '/') {
+                            depth--;
+                        }
+
+                        // Check for string end: >'; or >';  (closing tag then quote then semicolon)
+                        if (chars[i] === '>' && depth <= 0) {
+                            // Look ahead for '; pattern
+                            if (i + 1 < chars.length && chars[i + 1] === "'") {
+                                // Check if followed by ; or other statement-ending char
+                                if (i + 2 < chars.length && /[;\s\)]/.test(chars[i + 2])) {
+                                    content += chars[i]; // Include the >
+                                    i++; // Move past >
+                                    foundEnd = true;
+                                    break;
+                                }
+                            }
+                        }
+
+                        // Handle attribute quotes - when we see attr='
+                        if (chars[i] === "'" && i > 0 && chars[i - 1] === '=') {
+                            // This is an attribute value start, find the end
+                            i++; // Move past opening attr quote
+                            let attrValue = '';
+                            while (i < chars.length && chars[i] !== "'") {
+                                attrValue += chars[i];
+                                i++;
+                            }
+                            // Add as double-quoted attribute
+                            content += '"' + attrValue + '"';
+                            modified = true;
+                            i++; // Move past closing attr quote
+                            continue;
+                        }
+
+                        content += chars[i];
+                        i++;
+                    }
+
+                    // Found HTML content, output as template literal
+                    if (content.includes('<')) {
+                        result.push('`' + content + '`');
+                        modified = true;
+                    } else {
+                        result.push("'" + content + "'");
+                    }
+
+                    // Move past closing quote if found
+                    if (foundEnd && chars[i] === "'") {
+                        i++;
+                    }
+                } else {
+                    result.push(chars[i]);
+                    i++;
+                }
+            }
+
+            fixedCode = result.join('');
+
+            // Step 3: Final cleanup - fix any remaining attribute quotes in template literals
+            fixedCode = fixedCode.replace(/`([^`]*)`/g, (match, content) => {
+                if (content.includes('<')) {
+                    // Fix any remaining single-quoted attributes
+                    let fixed = content.replace(/(\s)(\w+[-\w]*)='([^']*)'/g, '$1$2="$3"');
+                    if (fixed !== content) {
+                        modified = true;
+                        return '`' + fixed + '`';
+                    }
+                }
+                return match;
+            });
+
+            // Step 4: Fix inline HTML in any remaining single-quoted strings
+            fixedCode = fixedCode.replace(/'([^']*<[^']*>)'/g, (match, content) => {
+                if (content.includes('<') && content.includes('>')) {
+                    let fixed = content.replace(/(\s)(\w+[-\w]*)='([^']*)'/g, '$1$2="$3"');
+                    modified = true;
+                    return '`' + fixed + '`';
+                }
+                return match;
+            });
+
+            if (modified) {
                 logger.info('Quote conflicts fixed in generated code');
             }
 
-            return code;
+            return fixedCode;
         } catch (error) {
             logger.warn('Failed to fix quote conflicts', { error: error.message });
             return code; // Return original if fixing fails
+        }
+    }
+
+    /**
+     * Wrap customElements.define() calls with a guard to prevent re-registration errors
+     * This handles the case where Claude generates Custom Elements despite being told not to
+     */
+    wrapCustomElementsWithGuard(code) {
+        try {
+            // Find all customElements.define() calls and extract the element names
+            const definePattern = /customElements\.define\s*\(\s*['"]([^'"]+)['"]/g;
+            const elementNames = [];
+            let match;
+
+            while ((match = definePattern.exec(code)) !== null) {
+                elementNames.push(match[1]);
+            }
+
+            if (elementNames.length === 0) {
+                return code;
+            }
+
+            logger.info('Wrapping Custom Elements with registration guard', { elementNames });
+
+            // Replace each customElements.define() with a guarded version
+            let guardedCode = code;
+            elementNames.forEach(name => {
+                // Create a regex that matches the full define call for this element
+                const fullDefinePattern = new RegExp(
+                    `customElements\\.define\\s*\\(\\s*['"]${name}['"]\\s*,\\s*(\\w+)\\s*\\)`,
+                    'g'
+                );
+
+                guardedCode = guardedCode.replace(fullDefinePattern, (match, className) => {
+                    return `(function() {
+                        if (!customElements.get('${name}')) {
+                            customElements.define('${name}', ${className});
+                        } else {
+                            console.log('Custom element ${name} already registered, skipping');
+                            // Create instance of existing element instead
+                            const existingElement = document.querySelector('${name}');
+                            if (!existingElement) {
+                                const root = document.getElementById('execution-root');
+                                if (root) {
+                                    root.innerHTML = '';
+                                    root.appendChild(document.createElement('${name}'));
+                                }
+                            }
+                        }
+                    })()`;
+                });
+            });
+
+            // Also add a cleanup at the start to clear the execution root
+            const cleanupCode = `
+// Auto-added: Clear execution root before rendering
+(function() {
+    const root = document.getElementById('execution-root');
+    if (root) {
+        root.innerHTML = '';
+    }
+})();
+`;
+            guardedCode = cleanupCode + guardedCode;
+
+            return guardedCode;
+        } catch (error) {
+            logger.warn('Failed to wrap Custom Elements', { error: error.message });
+            return code;
         }
     }
 }

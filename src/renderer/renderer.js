@@ -700,6 +700,13 @@ class DynamicAppRenderer {
             return;
         }
 
+        // Debounce protection - prevent double execution
+        if (this._isExecuting) {
+            console.log('Execution already in progress, ignoring duplicate click');
+            return;
+        }
+        this._isExecuting = true;
+
         this.executeBtn.disabled = true;
         this.executeBtn.innerHTML = '⏳ Executing...';
         this.executionResults.style.display = 'none';
@@ -745,6 +752,7 @@ class DynamicAppRenderer {
         } catch (error) {
             this.showNotification(`Error: ${error.message}`, 'error');
         } finally {
+            this._isExecuting = false;  // Reset debounce lock
             this.executeBtn.disabled = false;
             this.executeBtn.innerHTML = '▶️ Execute';
         }
@@ -780,18 +788,19 @@ class DynamicAppRenderer {
      * Load a pre-defined template into the prompt input
      */
     loadTemplate(templateType) {
+        // Templates are simplified - the system prompt handles database requirements automatically
         const templates = {
-            'todo': 'Create a complete todo list application with the following features:\n- Add new tasks with a text input and button\n- Mark tasks as complete/incomplete with a toggle button\n- Delete tasks\n- Display all tasks in a clean list\n- Store all data in a database using window.electronAPI\n- Show task count\n- Add timestamps for when tasks were created\n- Make it look modern and clean with good CSS styling',
+            'todo': 'Create a todo list app with:\n- Add tasks\n- Mark complete/incomplete\n- Delete tasks\n- Show task count\n- Modern clean design',
 
-            'notes': 'Build a note-taking application with these features:\n- Create new notes with title and content\n- Display all notes as cards or list items\n- Edit existing notes\n- Delete notes\n- Search/filter notes by title\n- Store everything in database using window.electronAPI\n- Add timestamps (created_at, updated_at)\n- Use modern, clean design with good typography',
+            'notes': 'Build a note-taking app with:\n- Create notes (title + content)\n- Edit and delete notes\n- Search notes\n- Modern card layout',
 
-            'contacts': 'Create a contact manager application that includes:\n- Add new contacts (name, email, phone, address)\n- Display all contacts in a searchable list\n- Edit contact information\n- Delete contacts\n- Search contacts by name or email\n- Store all data in database using window.electronAPI\n- Validate email and phone formats\n- Modern card-based or table layout',
+            'contacts': 'Create a contacts app with:\n- Add contacts (name, email, phone)\n- Edit and delete contacts\n- Search by name\n- Clean table or card layout',
 
-            'expenses': 'Build an expense tracker with:\n- Add expenses (amount, category, description, date)\n- Display all expenses in a table\n- Calculate total expenses\n- Filter by date range or category\n- Edit and delete expenses\n- Show expense breakdown by category\n- Store in database using window.electronAPI\n- Add data visualization if possible\n- Clean, professional design',
+            'expenses': 'Build an expense tracker with:\n- Add expenses (amount, category, date)\n- Show totals by category\n- Edit and delete\n- Professional design',
 
-            'inventory': 'Create an inventory management system:\n- Add items (name, quantity, price, SKU/code)\n- Display all items in a table\n- Update quantities (add/subtract stock)\n- Search items by name or SKU\n- Delete items\n- Show total inventory value\n- Store in database using window.electronAPI\n- Alert when stock is low\n- Professional business-style UI',
+            'inventory': 'Create an inventory system with:\n- Add items (name, quantity, price)\n- Update stock levels\n- Show total value\n- Low stock alerts',
 
-            'diary': 'Build a diary/journal application with:\n- Write new diary entries (title, content, mood/tags)\n- Display entries sorted by date (newest first)\n- Edit previous entries\n- Delete entries\n- Search entries by content or date\n- Store in database using window.electronAPI\n- Add timestamps automatically\n- Beautiful, calm design suitable for journaling'
+            'diary': 'Build a journal app with:\n- Write entries (title, content, mood)\n- View by date\n- Edit and delete\n- Calming design'
         };
 
         if (templates[templateType]) {
@@ -960,14 +969,127 @@ class DynamicAppRenderer {
     }
 
     /**
+     * Check if code contains Custom Element patterns
+     */
+    isCustomElementCode(code) {
+        return /extends\s+HTMLElement/i.test(code) ||
+               /customElements\.define/i.test(code);
+    }
+
+    /**
      * Wrap generated code to confine it to execution-root container
      * This prevents generated code from modifying the rest of the UI
      */
     wrapCodeForConfinement(code) {
-        // Replace global document references with confined scope
-        // This ensures generated code only modifies #execution-root
+        // Check if this is Custom Element code - needs special handling
+        const isCustomElement = this.isCustomElementCode(code);
 
-        const confinementWrapper = `
+        if (isCustomElement) {
+            // Use lighter confinement for Custom Elements to avoid breaking their rendering
+            return this.wrapCustomElementCode(code);
+        }
+
+        // Standard confinement for regular DOM code
+        return this.wrapStandardCode(code);
+    }
+
+    /**
+     * Lighter confinement wrapper for Custom Element code
+     * Custom Elements need more direct DOM access for proper rendering
+     */
+    wrapCustomElementCode(code) {
+        return `
+// === CUSTOM ELEMENT CONFINEMENT WRAPPER ===
+(function() {
+    const __executionRoot = document.getElementById('execution-root');
+    if (!__executionRoot) {
+        console.error('execution-root not found');
+        return;
+    }
+
+    // Clear execution-root for fresh render
+    __executionRoot.innerHTML = '';
+
+    // Save original customElements.define once to prevent stacking wrappers
+    if (!customElements.__originalDefine) {
+        customElements.__originalDefine = customElements.define.bind(customElements);
+    }
+    const __originalDefine = customElements.__originalDefine;
+
+    // Track elements defined during this execution
+    const __definedInThisRun = [];
+
+    // Unified customElements.define wrapper - handles both tracking and re-registration
+    customElements.define = function(name, constructor, options) {
+        if (customElements.get(name)) {
+            console.log('Custom element "' + name + '" already registered, creating new instance');
+            __definedInThisRun.push(name);
+            // Create and append a new instance
+            const newInstance = document.createElement(name);
+            __executionRoot.appendChild(newInstance);
+            return;
+        }
+        __definedInThisRun.push(name);
+        return __originalDefine(name, constructor, options);
+    };
+
+    // Create a minimal proxy that redirects body to execution-root
+    // but allows most document operations to work normally for Custom Elements
+    const __docProxy = new Proxy(document, {
+        get: function(target, prop) {
+            // Redirect body to execution-root
+            if (prop === 'body') {
+                return __executionRoot;
+            }
+            // Handle DOMContentLoaded immediately
+            if (prop === 'addEventListener') {
+                return function(event, handler, options) {
+                    if (event === 'DOMContentLoaded') {
+                        setTimeout(handler, 0);
+                    } else {
+                        target.addEventListener(event, handler, options);
+                    }
+                };
+            }
+            // Block dangerous methods
+            if (prop === 'write' || prop === 'writeln') {
+                return function() { console.warn('document.' + prop + ' is blocked'); };
+            }
+            // Pass through everything else for Custom Element compatibility
+            const value = target[prop];
+            return typeof value === 'function' ? value.bind(target) : value;
+        }
+    });
+
+    // Execute user code with minimal confinement
+    (function(document) {
+        try {
+            ${code}
+
+            // After code execution, if no element was appended, auto-append defined custom elements
+            if (__executionRoot.children.length === 0 && __definedInThisRun.length > 0) {
+                console.log('Auto-appending custom elements:', __definedInThisRun);
+                __definedInThisRun.forEach(function(name) {
+                    if (!__executionRoot.querySelector(name)) {
+                        const element = document.createElement(name);
+                        __executionRoot.appendChild(element);
+                    }
+                });
+            }
+        } catch (error) {
+            console.error('Custom element code error:', error);
+            __executionRoot.innerHTML = '<div style="color: #ef4444; padding: 16px; background: #fef2f2; border-radius: 8px;"><strong>Error:</strong> ' + error.message + '</div>';
+        }
+    })(__docProxy);
+})();
+`;
+    }
+
+    /**
+     * Standard confinement wrapper for regular DOM code
+     */
+    wrapStandardCode(code) {
+        return `
 // === CONFINEMENT WRAPPER - DO NOT MODIFY ===
 (function() {
     // Get the execution root container
@@ -977,40 +1099,28 @@ class DynamicAppRenderer {
         return;
     }
 
-    // Create confined document-like object
-    const __confinedDoc = {
-        getElementById: function(id) {
-            // Allow getting execution-root itself
-            if (id === 'execution-root') return __executionRoot;
-            // Search only within execution-root
-            return __executionRoot.querySelector('#' + id);
-        },
-        querySelector: function(selector) {
-            if (selector === '#execution-root') return __executionRoot;
-            return __executionRoot.querySelector(selector);
-        },
-        querySelectorAll: function(selector) {
-            return __executionRoot.querySelectorAll(selector);
-        },
-        createElement: function(tag) {
-            return document.createElement(tag);
-        },
-        createTextNode: function(text) {
-            return document.createTextNode(text);
-        },
-        createDocumentFragment: function() {
-            return document.createDocumentFragment();
-        },
-        // Redirect body to execution-root
-        get body() {
-            return __executionRoot;
-        }
-    };
+    // Clear for fresh execution
+    __executionRoot.innerHTML = '';
 
-    // Override document methods in the execution scope
-    const originalGetElementById = document.getElementById.bind(document);
-    const originalQuerySelector = document.querySelector.bind(document);
-    const originalQuerySelectorAll = document.querySelectorAll.bind(document);
+    // === CUSTOM ELEMENT PROTECTION ===
+    // Save original customElements.define once to prevent stacking wrappers
+    if (!customElements.__originalDefine) {
+        customElements.__originalDefine = customElements.define.bind(customElements);
+    }
+    const __originalDefine = customElements.__originalDefine;
+
+    // Override customElements.define to handle re-registration gracefully
+    customElements.define = function(name, constructor, options) {
+        if (customElements.get(name)) {
+            console.log('Custom element "' + name + '" already registered, skipping re-registration');
+            // Clear execution-root and add a new instance of the existing element
+            __executionRoot.innerHTML = '';
+            const existingElement = document.createElement(name);
+            __executionRoot.appendChild(existingElement);
+            return;
+        }
+        return __originalDefine(name, constructor, options);
+    };
 
     // Create a proxy for document that confines most operations
     const confinedDocument = new Proxy(document, {
@@ -1022,13 +1132,7 @@ class DynamicAppRenderer {
                     // First check execution-root, then fall back to real document for system IDs
                     const inRoot = __executionRoot.querySelector('#' + CSS.escape(id));
                     if (inRoot) return inRoot;
-                    // Block access to non-execution-root elements
-                    const realElement = originalGetElementById(id);
-                    if (realElement && !__executionRoot.contains(realElement) && id !== 'execution-root') {
-                        console.warn('Access to element outside execution-root blocked:', id);
-                        return null;
-                    }
-                    return realElement;
+                    return null; // Block access to outside elements
                 };
             }
             if (prop === 'querySelector') {
@@ -1078,7 +1182,6 @@ ${code}
     })(confinedDocument);
 })();
 `;
-        return confinementWrapper;
     }
 
     /**
