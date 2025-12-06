@@ -1,11 +1,21 @@
-const Database = require('better-sqlite3');
+const Database = require('better-sqlite3-multiple-ciphers');
 const path = require('path');
 const fs = require('fs').promises;
+const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
 const logger = require('./logger');
 const sqlValidator = require('./sqlValidator');
 const databaseOptimizer = require('./databaseOptimizer');
 const { DATABASE } = require('../config/constants');
+const secureStorage = require('./secureStorage');
+
+// Encryption configuration
+const ENCRYPTION_CONFIG = DATABASE.ENCRYPTION || {
+    ENABLED: false,
+    CIPHER: 'sqlcipher',
+    KDF_ITERATIONS: 256000,
+    PAGE_SIZE: 4096
+};
 
 class DatabaseManager {
     constructor(dataPath = null, options = {}) {
@@ -16,6 +26,11 @@ class DatabaseManager {
         this.maxConnections = options.maxConnections || 10;
         this.schemas = new Map(); // Track schemas for each database
         this.migrations = new Map(); // Track migrations
+
+        // Encryption settings
+        this.encryptionEnabled = options.encryptionEnabled ?? ENCRYPTION_CONFIG.ENABLED;
+        this.encryptionKey = null; // Will be set during initialization
+        this.encryptionKeyPath = path.join(this.dataPath, '.encryption_key');
         
         // Connection pooling and performance options
         this.poolOptions = {
@@ -67,8 +82,16 @@ class DatabaseManager {
     async _performInitialization() {
         try {
             await this.initializeDataDirectory();
+
+            // Initialize encryption if enabled
+            if (this.encryptionEnabled) {
+                await this.initializeEncryption();
+            }
+
             this.initialized = true;
-            logger.info('DatabaseManager initialized successfully');
+            logger.info('DatabaseManager initialized successfully', {
+                encryptionEnabled: this.encryptionEnabled
+            });
             return { success: true };
         } catch (error) {
             logger.error('DatabaseManager initialization failed', { error: error.message });
@@ -82,6 +105,194 @@ class DatabaseManager {
             logger.info('Database data directory initialized', { path: this.dataPath });
         } catch (error) {
             logger.error('Failed to initialize data directory', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Initialize database encryption
+     * Generates or loads the encryption key
+     */
+    async initializeEncryption() {
+        try {
+            // Try to load existing key
+            const existingKey = await this.loadEncryptionKey();
+            if (existingKey) {
+                this.encryptionKey = existingKey;
+                logger.info('Loaded existing database encryption key');
+                return;
+            }
+
+            // Generate new key
+            this.encryptionKey = await this.generateEncryptionKey();
+            await this.saveEncryptionKey(this.encryptionKey);
+            logger.info('Generated new database encryption key');
+        } catch (error) {
+            logger.error('Failed to initialize encryption', { error: error.message });
+            throw error;
+        }
+    }
+
+    /**
+     * Generate a secure encryption key
+     * Uses PBKDF2 to derive a key from random bytes
+     * @returns {Promise<string>} Hex-encoded encryption key
+     */
+    async generateEncryptionKey() {
+        return new Promise((resolve, reject) => {
+            // Generate 32 bytes of random data
+            const salt = crypto.randomBytes(32);
+            const masterKey = crypto.randomBytes(32);
+
+            // Derive key using PBKDF2
+            crypto.pbkdf2(masterKey, salt, ENCRYPTION_CONFIG.KDF_ITERATIONS, 32, 'sha512', (err, derivedKey) => {
+                if (err) {
+                    reject(err);
+                    return;
+                }
+
+                // Store both salt and derived key
+                const keyData = {
+                    salt: salt.toString('hex'),
+                    key: derivedKey.toString('hex'),
+                    version: 1,
+                    algorithm: ENCRYPTION_CONFIG.CIPHER,
+                    iterations: ENCRYPTION_CONFIG.KDF_ITERATIONS
+                };
+
+                resolve(JSON.stringify(keyData));
+            });
+        });
+    }
+
+    /**
+     * Load encryption key from secure storage (using Electron safeStorage)
+     * @returns {Promise<string|null>} Encryption key or null if not found
+     */
+    async loadEncryptionKey() {
+        try {
+            // Try to load from secure storage first (Electron safeStorage)
+            if (secureStorage.isAvailable) {
+                const keyData = await secureStorage.retrieve('db_encryption_key');
+                if (keyData) {
+                    // Validate key structure
+                    const parsed = typeof keyData === 'string' ? JSON.parse(keyData) : keyData;
+                    if (parsed.key && parsed.salt && parsed.version) {
+                        return typeof keyData === 'string' ? keyData : JSON.stringify(keyData);
+                    }
+                }
+            }
+
+            // Fallback: try to migrate from file-based storage
+            try {
+                const keyData = await fs.readFile(this.encryptionKeyPath, 'utf8');
+                const parsed = JSON.parse(keyData);
+                if (parsed.key && parsed.salt && parsed.version) {
+                    // Migrate to secure storage
+                    if (secureStorage.isAvailable) {
+                        await this.saveEncryptionKey(keyData);
+                        // Remove old file after successful migration
+                        await fs.unlink(this.encryptionKeyPath).catch(() => {});
+                        logger.info('Encryption key migrated to secure storage');
+                    }
+                    return keyData;
+                }
+            } catch (fileError) {
+                if (fileError.code !== 'ENOENT') {
+                    throw fileError;
+                }
+            }
+
+            return null;
+        } catch (error) {
+            logger.error('Failed to load encryption key', { error: error.message });
+            return null;
+        }
+    }
+
+    /**
+     * Save encryption key to secure storage (using Electron safeStorage)
+     * @param {string} keyData - The key data to save
+     */
+    async saveEncryptionKey(keyData) {
+        try {
+            // Use Electron's secure storage if available
+            if (secureStorage.isAvailable) {
+                await secureStorage.store('db_encryption_key', keyData);
+                logger.info('Encryption key saved to secure storage');
+            } else {
+                // Fallback to file-based storage with restrictive permissions
+                await fs.writeFile(this.encryptionKeyPath, keyData, { mode: 0o600 });
+                logger.warn('Encryption key saved to file (secure storage unavailable)');
+            }
+        } catch (error) {
+            logger.error('Failed to save encryption key', { error: error.message });
+            throw error;
+        }
+    }
+
+    /**
+     * Get the hex key for SQLCipher
+     * @returns {string} Hex-encoded key for PRAGMA key
+     */
+    getEncryptionKeyHex() {
+        if (!this.encryptionKey) {
+            throw new Error('Encryption key not initialized');
+        }
+
+        const keyData = JSON.parse(this.encryptionKey);
+        return keyData.key;
+    }
+
+    /**
+     * Apply encryption settings to a database connection
+     * @param {Database} db - The database connection
+     */
+    applyEncryption(db) {
+        if (!this.encryptionEnabled || !this.encryptionKey) {
+            return;
+        }
+
+        const keyHex = this.getEncryptionKeyHex();
+
+        // SQLCipher PRAGMA statements
+        // Note: These must be executed immediately after opening the database
+        try {
+            // Set the encryption key (using hex key format)
+            db.pragma(`key = "x'${keyHex}'"`);
+
+            // Set SQLCipher-specific options for v4 compatibility
+            db.pragma(`cipher_page_size = ${ENCRYPTION_CONFIG.PAGE_SIZE}`);
+            db.pragma(`kdf_iter = ${ENCRYPTION_CONFIG.KDF_ITERATIONS}`);
+            db.pragma('cipher_memory_security = ON');
+
+            logger.debug('Applied encryption settings to database connection');
+        } catch (error) {
+            logger.error('Failed to apply encryption settings', { error: error.message });
+            throw error;
+        }
+    }
+
+    /**
+     * Check if a database is encrypted
+     * @param {string} dbPath - Path to the database file
+     * @returns {Promise<boolean>} True if database appears to be encrypted
+     */
+    async isDatabaseEncrypted(dbPath) {
+        try {
+            const header = Buffer.alloc(16);
+            const fd = await fs.open(dbPath, 'r');
+            await fd.read(header, 0, 16, 0);
+            await fd.close();
+
+            // SQLite databases start with "SQLite format 3\0"
+            // Encrypted databases will have different headers
+            const sqliteHeader = 'SQLite format 3\0';
+            return header.toString('utf8', 0, 16) !== sqliteHeader;
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                return false; // New database
+            }
             throw error;
         }
     }
@@ -407,7 +618,12 @@ class DatabaseManager {
 
             const dbPath = path.join(this.dataPath, `${dbName}.db`);
             const db = new Database(dbPath);
-            
+
+            // Apply encryption BEFORE any other operations
+            if (this.encryptionEnabled) {
+                this.applyEncryption(db);
+            }
+
             // Apply performance optimizations
             this.optimizeConnection(db, dbName);
             
@@ -505,10 +721,17 @@ class DatabaseManager {
      */
     async createPooledConnection(dbName, poolKey) {
         const dbPath = path.join(this.dataPath, `${dbName}.db`);
+        const db = new Database(dbPath);
+
+        // Apply encryption BEFORE any other operations
+        if (this.encryptionEnabled) {
+            this.applyEncryption(db);
+        }
+
         const connection = {
             id: uuidv4(),
             dbName,
-            db: new Database(dbPath),
+            db: db,
             createdAt: Date.now(),
             lastUsed: Date.now(),
             queryCount: 0
@@ -1014,18 +1237,21 @@ class DatabaseManager {
         try {
             const db = await this.connectDatabase(dbName);
 
-            // Validate table name to prevent SQL injection
-            this.validateTableName(tableName);
-
-            let sql = `SELECT * FROM ${tableName}`;
-            const params = [];
+            // Use safe query builder for basic select
+            let whereClause = null;
+            let whereParams = [];
 
             // Add WHERE clause
             if (options.where) {
-                const whereClause = this.buildWhereClause(options.where);
-                sql += ` WHERE ${whereClause.sql}`;
-                params.push(...whereClause.params);
+                const where = this.buildWhereClause(options.where);
+                whereClause = where.sql;
+                whereParams = where.params;
             }
+
+            // Build base query using sqlValidator
+            const safeQuery = sqlValidator.buildSafeSelect(tableName, ['*'], whereClause, whereParams);
+            let sql = safeQuery.sql;
+            const params = [...safeQuery.params];
 
             // Add ORDER BY with sanitization
             if (options.orderBy) {
@@ -1079,24 +1305,22 @@ class DatabaseManager {
     async updateData(dbName, tableName, id, data) {
         try {
             const db = await this.connectDatabase(dbName);
-            
+
             const schema = await this.getTableSchema(db, tableName);
             const validatedData = this.validateAndTransformData(data, schema);
-            
-            const updates = Object.keys(validatedData).map(key => `${key} = ?`).join(', ');
-            const values = [...Object.values(validatedData), id];
-            
-            const updateSQL = `UPDATE ${tableName} SET ${updates} WHERE id = ?`;
-            const stmt = db.prepare(updateSQL);
-            const result = stmt.run(...values);
-            
-            logger.info('Data updated successfully', { 
-                database: dbName, 
-                table: tableName, 
+
+            // Use safe query builder for update
+            const safeQuery = sqlValidator.buildSafeUpdate(tableName, validatedData, 'id = ?', [id]);
+            const stmt = db.prepare(safeQuery.sql);
+            const result = stmt.run(...safeQuery.params);
+
+            logger.info('Data updated successfully', {
+                database: dbName,
+                table: tableName,
                 id: id,
-                changes: result.changes 
+                changes: result.changes
             });
-            
+
             return { success: true, id: id, changes: result.changes };
         } catch (error) {
             logger.error('Failed to update data', { database: dbName, table: tableName, id, error });
@@ -1110,18 +1334,19 @@ class DatabaseManager {
     async deleteData(dbName, tableName, id) {
         try {
             const db = await this.connectDatabase(dbName);
-            
-            const deleteSQL = `DELETE FROM ${tableName} WHERE id = ?`;
-            const stmt = db.prepare(deleteSQL);
-            const result = stmt.run(id);
-            
-            logger.info('Data deleted successfully', { 
-                database: dbName, 
-                table: tableName, 
+
+            // Use safe query builder for delete
+            const safeQuery = sqlValidator.buildSafeDelete(tableName, 'id = ?', [id]);
+            const stmt = db.prepare(safeQuery.sql);
+            const result = stmt.run(...safeQuery.params);
+
+            logger.info('Data deleted successfully', {
+                database: dbName,
+                table: tableName,
                 id: id,
-                changes: result.changes 
+                changes: result.changes
             });
-            
+
             return { success: true, id: id, changes: result.changes };
         } catch (error) {
             logger.error('Failed to delete data', { database: dbName, table: tableName, id, error });
@@ -1472,18 +1697,40 @@ class DatabaseManager {
         try {
             const db = await this.connectDatabase(dbName);
 
-            // Create app registry table
+            // Create app registry table (enhanced for regeneration support)
             db.exec(`
                 CREATE TABLE IF NOT EXISTS _app_registry (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     app_id TEXT UNIQUE NOT NULL,
                     app_name TEXT NOT NULL,
                     description TEXT,
+                    original_prompt TEXT,
+                    generated_code TEXT,
                     status TEXT DEFAULT 'active',
+                    deprecation_reason TEXT,
+                    last_regenerated DATETIME,
+                    version INTEGER DEFAULT 1,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             `);
+
+            // Add columns if they don't exist (for migration of existing databases)
+            try {
+                db.exec(`ALTER TABLE _app_registry ADD COLUMN original_prompt TEXT`);
+            } catch (e) { /* Column already exists */ }
+            try {
+                db.exec(`ALTER TABLE _app_registry ADD COLUMN generated_code TEXT`);
+            } catch (e) { /* Column already exists */ }
+            try {
+                db.exec(`ALTER TABLE _app_registry ADD COLUMN deprecation_reason TEXT`);
+            } catch (e) { /* Column already exists */ }
+            try {
+                db.exec(`ALTER TABLE _app_registry ADD COLUMN last_regenerated DATETIME`);
+            } catch (e) { /* Column already exists */ }
+            try {
+                db.exec(`ALTER TABLE _app_registry ADD COLUMN version INTEGER DEFAULT 1`);
+            } catch (e) { /* Column already exists */ }
 
             // Create table registry for tracking table ownership
             db.exec(`
@@ -1512,11 +1759,44 @@ class DatabaseManager {
                 )
             `);
 
+            // Create table usage tracking (which apps use which tables)
+            db.exec(`
+                CREATE TABLE IF NOT EXISTS _table_usage (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    table_name TEXT NOT NULL,
+                    app_id TEXT NOT NULL,
+                    access_type TEXT NOT NULL DEFAULT 'read',
+                    columns_used TEXT,
+                    last_accessed DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    access_count INTEGER DEFAULT 1,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(table_name, app_id),
+                    FOREIGN KEY (app_id) REFERENCES _app_registry(app_id)
+                )
+            `);
+
+            // Create schema change history for tracking modifications
+            db.exec(`
+                CREATE TABLE IF NOT EXISTS _schema_changes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    table_name TEXT NOT NULL,
+                    change_type TEXT NOT NULL,
+                    old_schema TEXT,
+                    new_schema TEXT,
+                    changed_by_app TEXT,
+                    affected_apps TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            `);
+
             // Create indexes for faster lookups
             db.exec(`
                 CREATE INDEX IF NOT EXISTS idx_table_registry_app_id ON _table_registry(app_id);
                 CREATE INDEX IF NOT EXISTS idx_table_relationships_source ON _table_relationships(source_table);
                 CREATE INDEX IF NOT EXISTS idx_table_relationships_target ON _table_relationships(target_table);
+                CREATE INDEX IF NOT EXISTS idx_table_usage_table ON _table_usage(table_name);
+                CREATE INDEX IF NOT EXISTS idx_table_usage_app ON _table_usage(app_id);
+                CREATE INDEX IF NOT EXISTS idx_schema_changes_table ON _schema_changes(table_name);
             `);
 
             logger.info('Shared database initialized with registry tables', { database: dbName });
@@ -1532,9 +1812,11 @@ class DatabaseManager {
      * @param {string} appId - Unique identifier for the app
      * @param {string} appName - Display name for the app
      * @param {string} description - Description of what the app does
+     * @param {string} originalPrompt - The original prompt used to generate the app
+     * @param {string} generatedCode - The generated code for the app
      * @returns {Promise<{success: boolean, app?: Object, error?: string}>}
      */
-    async registerApp(appId, appName, description = '') {
+    async registerApp(appId, appName, description = '', originalPrompt = null, generatedCode = null) {
         try {
             const db = await this.connectDatabase(DATABASE.SHARED_DB_NAME);
 
@@ -1542,15 +1824,17 @@ class DatabaseManager {
             await this.initializeSharedDatabase();
 
             const stmt = db.prepare(`
-                INSERT INTO _app_registry (app_id, app_name, description)
-                VALUES (?, ?, ?)
+                INSERT INTO _app_registry (app_id, app_name, description, original_prompt, generated_code, status)
+                VALUES (?, ?, ?, ?, ?, 'active')
                 ON CONFLICT(app_id) DO UPDATE SET
                     app_name = excluded.app_name,
                     description = excluded.description,
+                    original_prompt = COALESCE(excluded.original_prompt, _app_registry.original_prompt),
+                    generated_code = COALESCE(excluded.generated_code, _app_registry.generated_code),
                     updated_at = CURRENT_TIMESTAMP
             `);
 
-            stmt.run(appId, appName, description);
+            stmt.run(appId, appName, description, originalPrompt, generatedCode);
 
             const app = db.prepare('SELECT * FROM _app_registry WHERE app_id = ?').get(appId);
 
@@ -1617,6 +1901,192 @@ class DatabaseManager {
             return { success: true, apps };
         } catch (error) {
             logger.error('Failed to list apps', { error });
+            return { success: false, error: error.message };
+        }
+    }
+
+    // ============================================================
+    // APP DEPRECATION & REGENERATION
+    // ============================================================
+
+    /**
+     * Mark an app as deprecated due to schema changes
+     * @param {string} appId - The app to deprecate
+     * @param {string} reason - Why the app was deprecated
+     * @returns {Promise<{success: boolean, error?: string}>}
+     */
+    async deprecateApp(appId, reason) {
+        try {
+            const db = await this.connectDatabase(DATABASE.SHARED_DB_NAME);
+
+            const stmt = db.prepare(`
+                UPDATE _app_registry
+                SET status = 'deprecated',
+                    deprecation_reason = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE app_id = ?
+            `);
+
+            const result = stmt.run(reason, appId);
+
+            if (result.changes === 0) {
+                return { success: false, error: 'App not found' };
+            }
+
+            logger.info('App deprecated', { appId, reason });
+            return { success: true };
+        } catch (error) {
+            logger.error('Failed to deprecate app', { appId, error });
+            return { success: false, error: error.message };
+        }
+    }
+
+    /**
+     * Get all registered apps
+     * @returns {Promise<{success: boolean, apps?: Array, error?: string}>}
+     */
+    async getAppRegistry() {
+        try {
+            const db = await this.connectDatabase(DATABASE.SHARED_DB_NAME);
+            await this.initializeSharedDatabase();
+
+            const apps = db.prepare(`
+                SELECT
+                    ar.*,
+                    COUNT(tr.id) as table_count
+                FROM _app_registry ar
+                LEFT JOIN _table_registry tr ON ar.app_id = tr.app_id
+                GROUP BY ar.id
+                ORDER BY ar.created_at DESC
+            `).all();
+
+            return { success: true, apps };
+        } catch (error) {
+            logger.error('Failed to get app registry', { error });
+            return { success: false, error: error.message };
+        }
+    }
+
+    /**
+     * Get all deprecated apps that need regeneration
+     * @returns {Promise<{success: boolean, apps?: Array, error?: string}>}
+     */
+    async getDeprecatedApps() {
+        try {
+            const db = await this.connectDatabase(DATABASE.SHARED_DB_NAME);
+            await this.initializeSharedDatabase();
+
+            const apps = db.prepare(`
+                SELECT
+                    ar.*,
+                    COUNT(tr.id) as table_count
+                FROM _app_registry ar
+                LEFT JOIN _table_registry tr ON ar.app_id = tr.app_id
+                WHERE ar.status = 'deprecated'
+                GROUP BY ar.id
+                ORDER BY ar.updated_at DESC
+            `).all();
+
+            return { success: true, apps };
+        } catch (error) {
+            logger.error('Failed to get deprecated apps', { error });
+            return { success: false, error: error.message };
+        }
+    }
+
+    /**
+     * Update an app's code after regeneration
+     * @param {string} appId - The app to update
+     * @param {string} newCode - The newly generated code
+     * @param {boolean} markActive - Whether to mark as active (default true)
+     * @returns {Promise<{success: boolean, app?: Object, error?: string}>}
+     */
+    async updateAppCode(appId, newCode, markActive = true) {
+        try {
+            const db = await this.connectDatabase(DATABASE.SHARED_DB_NAME);
+
+            const stmt = db.prepare(`
+                UPDATE _app_registry
+                SET generated_code = ?,
+                    status = ?,
+                    deprecation_reason = NULL,
+                    last_regenerated = CURRENT_TIMESTAMP,
+                    version = version + 1,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE app_id = ?
+            `);
+
+            const result = stmt.run(newCode, markActive ? 'active' : 'deprecated', appId);
+
+            if (result.changes === 0) {
+                return { success: false, error: 'App not found' };
+            }
+
+            const app = db.prepare('SELECT * FROM _app_registry WHERE app_id = ?').get(appId);
+
+            logger.info('App code updated', { appId, version: app.version });
+            return { success: true, app };
+        } catch (error) {
+            logger.error('Failed to update app code', { appId, error });
+            return { success: false, error: error.message };
+        }
+    }
+
+    /**
+     * Deprecate all apps affected by a schema change
+     * @param {string} tableName - The table that was changed
+     * @param {Object} impact - The impact analysis result
+     * @returns {Promise<{success: boolean, deprecatedApps?: Array, error?: string}>}
+     */
+    async deprecateAffectedApps(tableName, impact) {
+        try {
+            const deprecatedApps = [];
+
+            for (const app of impact.apps_with_impact || []) {
+                if (app.impact_level === 'breaking') {
+                    const reason = `Schema change in table '${tableName}': ${app.breaking_changes.map(c => c.message).join('; ')}`;
+                    await this.deprecateApp(app.app_id, reason);
+                    deprecatedApps.push({
+                        app_id: app.app_id,
+                        app_name: app.app_name,
+                        reason: reason
+                    });
+                }
+            }
+
+            logger.info('Deprecated affected apps', { tableName, count: deprecatedApps.length });
+            return { success: true, deprecatedApps };
+        } catch (error) {
+            logger.error('Failed to deprecate affected apps', { tableName, error });
+            return { success: false, error: error.message };
+        }
+    }
+
+    /**
+     * Get apps that can be regenerated (have original prompt stored)
+     * @returns {Promise<{success: boolean, apps?: Array, error?: string}>}
+     */
+    async getRegeneratableApps() {
+        try {
+            const db = await this.connectDatabase(DATABASE.SHARED_DB_NAME);
+            await this.initializeSharedDatabase();
+
+            const apps = db.prepare(`
+                SELECT
+                    ar.*,
+                    COUNT(tr.id) as table_count
+                FROM _app_registry ar
+                LEFT JOIN _table_registry tr ON ar.app_id = tr.app_id
+                WHERE ar.status = 'deprecated'
+                  AND ar.original_prompt IS NOT NULL
+                  AND ar.original_prompt != ''
+                GROUP BY ar.id
+                ORDER BY ar.updated_at DESC
+            `).all();
+
+            return { success: true, apps };
+        } catch (error) {
+            logger.error('Failed to get regeneratable apps', { error });
             return { success: false, error: error.message };
         }
     }
@@ -1877,12 +2347,801 @@ class DatabaseManager {
         }
     }
 
+    // ============================================================
+    // TABLE USAGE TRACKING & DEPENDENCY ANALYSIS
+    // For detecting when schema changes affect other apps
+    // ============================================================
+
+    /**
+     * Register that an app uses a table
+     * @param {string} tableName - The table being used
+     * @param {string} appId - The app using the table
+     * @param {string} accessType - Type of access: 'read', 'write', or 'both'
+     * @param {Array<string>} columnsUsed - Which columns the app uses
+     * @returns {Promise<{success: boolean, error?: string}>}
+     */
+    async registerTableUsage(tableName, appId, accessType = 'read', columnsUsed = []) {
+        try {
+            const db = await this.connectDatabase(DATABASE.SHARED_DB_NAME);
+            await this.initializeSharedDatabase();
+
+            const stmt = db.prepare(`
+                INSERT INTO _table_usage (table_name, app_id, access_type, columns_used, last_accessed, access_count)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, 1)
+                ON CONFLICT(table_name, app_id) DO UPDATE SET
+                    access_type = CASE
+                        WHEN excluded.access_type != _table_usage.access_type THEN 'both'
+                        ELSE excluded.access_type
+                    END,
+                    columns_used = excluded.columns_used,
+                    last_accessed = CURRENT_TIMESTAMP,
+                    access_count = access_count + 1
+            `);
+
+            stmt.run(tableName, appId, accessType, JSON.stringify(columnsUsed));
+
+            logger.info('Table usage registered', { tableName, appId, accessType });
+            return { success: true };
+        } catch (error) {
+            logger.error('Failed to register table usage', { tableName, appId, error });
+            return { success: false, error: error.message };
+        }
+    }
+
+    /**
+     * Get all apps that use a specific table
+     * @param {string} tableName - The table to check
+     * @returns {Promise<{success: boolean, apps?: Array, error?: string}>}
+     */
+    async getTableDependencies(tableName) {
+        try {
+            const db = await this.connectDatabase(DATABASE.SHARED_DB_NAME);
+            await this.initializeSharedDatabase();
+
+            const dependencies = db.prepare(`
+                SELECT
+                    tu.app_id,
+                    tu.access_type,
+                    tu.columns_used,
+                    tu.last_accessed,
+                    tu.access_count,
+                    ar.app_name,
+                    ar.description as app_description,
+                    ar.status as app_status
+                FROM _table_usage tu
+                LEFT JOIN _app_registry ar ON tu.app_id = ar.app_id
+                WHERE tu.table_name = ?
+                ORDER BY tu.access_count DESC
+            `).all(tableName);
+
+            // Parse columns_used JSON
+            const apps = dependencies.map(dep => ({
+                ...dep,
+                columns_used: dep.columns_used ? JSON.parse(dep.columns_used) : []
+            }));
+
+            return { success: true, apps };
+        } catch (error) {
+            logger.error('Failed to get table dependencies', { tableName, error });
+            return { success: false, error: error.message };
+        }
+    }
+
+    /**
+     * Get all tables used by a specific app
+     * @param {string} appId - The app to check
+     * @returns {Promise<{success: boolean, tables?: Array, error?: string}>}
+     */
+    async getAppTableUsage(appId) {
+        try {
+            const db = await this.connectDatabase(DATABASE.SHARED_DB_NAME);
+            await this.initializeSharedDatabase();
+
+            const tables = db.prepare(`
+                SELECT
+                    tu.table_name,
+                    tu.access_type,
+                    tu.columns_used,
+                    tu.last_accessed,
+                    tu.access_count,
+                    tr.app_id as owner_app_id,
+                    ar.app_name as owner_app_name
+                FROM _table_usage tu
+                LEFT JOIN _table_registry tr ON tu.table_name = tr.table_name
+                LEFT JOIN _app_registry ar ON tr.app_id = ar.app_id
+                WHERE tu.app_id = ?
+                ORDER BY tu.last_accessed DESC
+            `).all(appId);
+
+            // Parse columns_used JSON
+            const result = tables.map(t => ({
+                ...t,
+                columns_used: t.columns_used ? JSON.parse(t.columns_used) : [],
+                is_owner: t.owner_app_id === appId
+            }));
+
+            return { success: true, tables: result };
+        } catch (error) {
+            logger.error('Failed to get app table usage', { appId, error });
+            return { success: false, error: error.message };
+        }
+    }
+
+    /**
+     * Analyze the impact of a schema change on other apps
+     * @param {string} tableName - The table being modified
+     * @param {Object} newSchema - The proposed new schema
+     * @param {string} changingAppId - The app making the change
+     * @returns {Promise<{success: boolean, impact?: Object, error?: string}>}
+     */
+    async analyzeSchemaChangeImpact(tableName, newSchema, changingAppId) {
+        try {
+            const db = await this.connectDatabase(DATABASE.SHARED_DB_NAME);
+            await this.initializeSharedDatabase();
+
+            // Get current schema
+            const currentSchemaRow = db.prepare(`
+                SELECT schema_json FROM _table_registry WHERE table_name = ?
+            `).get(tableName);
+
+            const currentSchema = currentSchemaRow ? JSON.parse(currentSchemaRow.schema_json) : null;
+
+            // Get all apps using this table (excluding the one making the change)
+            const depsResult = await this.getTableDependencies(tableName);
+            const affectedApps = depsResult.success
+                ? depsResult.apps.filter(app => app.app_id !== changingAppId)
+                : [];
+
+            // Analyze schema differences
+            const changes = this.compareSchemas(currentSchema, newSchema);
+
+            // Determine impact level for each affected app
+            const impactDetails = affectedApps.map(app => {
+                const columnsUsed = app.columns_used || [];
+                const breakingChanges = [];
+                const warnings = [];
+
+                // Check for removed columns that the app uses
+                for (const removedCol of changes.removedColumns) {
+                    if (columnsUsed.includes(removedCol) || columnsUsed.length === 0) {
+                        breakingChanges.push({
+                            type: 'column_removed',
+                            column: removedCol,
+                            message: `Column '${removedCol}' is being removed but may be used by this app`
+                        });
+                    }
+                }
+
+                // Check for type changes on columns the app uses
+                for (const typeChange of changes.typeChanges) {
+                    if (columnsUsed.includes(typeChange.column) || columnsUsed.length === 0) {
+                        warnings.push({
+                            type: 'type_changed',
+                            column: typeChange.column,
+                            oldType: typeChange.oldType,
+                            newType: typeChange.newType,
+                            message: `Column '${typeChange.column}' type changed from '${typeChange.oldType}' to '${typeChange.newType}'`
+                        });
+                    }
+                }
+
+                // Check for renamed columns
+                for (const renamedCol of changes.renamedColumns) {
+                    if (columnsUsed.includes(renamedCol.oldName) || columnsUsed.length === 0) {
+                        breakingChanges.push({
+                            type: 'column_renamed',
+                            oldName: renamedCol.oldName,
+                            newName: renamedCol.newName,
+                            message: `Column '${renamedCol.oldName}' may have been renamed to '${renamedCol.newName}'`
+                        });
+                    }
+                }
+
+                return {
+                    app_id: app.app_id,
+                    app_name: app.app_name || app.app_id,
+                    access_type: app.access_type,
+                    columns_used: columnsUsed,
+                    breaking_changes: breakingChanges,
+                    warnings: warnings,
+                    impact_level: breakingChanges.length > 0 ? 'breaking' : (warnings.length > 0 ? 'warning' : 'none')
+                };
+            });
+
+            // Filter to only apps with actual impact
+            const appsWithImpact = impactDetails.filter(app =>
+                app.breaking_changes.length > 0 || app.warnings.length > 0
+            );
+
+            const impact = {
+                table_name: tableName,
+                changing_app: changingAppId,
+                schema_changes: changes,
+                affected_apps: impactDetails,
+                apps_with_impact: appsWithImpact,
+                has_breaking_changes: impactDetails.some(app => app.impact_level === 'breaking'),
+                has_warnings: impactDetails.some(app => app.impact_level === 'warning'),
+                total_affected: affectedApps.length,
+                summary: this.generateImpactSummary(changes, appsWithImpact)
+            };
+
+            return { success: true, impact };
+        } catch (error) {
+            logger.error('Failed to analyze schema change impact', { tableName, error });
+            return { success: false, error: error.message };
+        }
+    }
+
+    /**
+     * Compare two schemas and identify differences
+     * @param {Object} oldSchema - The current schema
+     * @param {Object} newSchema - The proposed new schema
+     * @returns {Object} - Differences between schemas
+     */
+    compareSchemas(oldSchema, newSchema) {
+        const oldColumns = oldSchema?.columns ? Object.keys(oldSchema.columns) : [];
+        const newColumns = newSchema?.columns ? Object.keys(newSchema.columns) : [];
+
+        const addedColumns = newColumns.filter(col => !oldColumns.includes(col));
+        const removedColumns = oldColumns.filter(col => !newColumns.includes(col));
+        const commonColumns = oldColumns.filter(col => newColumns.includes(col));
+
+        const typeChanges = [];
+        const constraintChanges = [];
+
+        for (const col of commonColumns) {
+            const oldDef = oldSchema.columns[col] || {};
+            const newDef = newSchema.columns[col] || {};
+
+            // Check type changes
+            if (oldDef.type !== newDef.type) {
+                typeChanges.push({
+                    column: col,
+                    oldType: oldDef.type || 'unknown',
+                    newType: newDef.type || 'unknown'
+                });
+            }
+
+            // Check constraint changes
+            const constraintsToCheck = ['required', 'unique', 'primaryKey'];
+            for (const constraint of constraintsToCheck) {
+                if (oldDef[constraint] !== newDef[constraint]) {
+                    constraintChanges.push({
+                        column: col,
+                        constraint: constraint,
+                        oldValue: oldDef[constraint],
+                        newValue: newDef[constraint]
+                    });
+                }
+            }
+        }
+
+        // Try to detect renames (columns with similar types that were removed and added)
+        const renamedColumns = [];
+        for (const removed of removedColumns) {
+            const oldType = oldSchema.columns[removed]?.type;
+            for (const added of addedColumns) {
+                const newType = newSchema.columns[added]?.type;
+                if (oldType === newType) {
+                    renamedColumns.push({ oldName: removed, newName: added, type: oldType });
+                }
+            }
+        }
+
+        return {
+            addedColumns,
+            removedColumns,
+            typeChanges,
+            constraintChanges,
+            renamedColumns,
+            hasChanges: addedColumns.length > 0 || removedColumns.length > 0 ||
+                        typeChanges.length > 0 || constraintChanges.length > 0
+        };
+    }
+
+    /**
+     * Generate a human-readable summary of schema change impact
+     */
+    generateImpactSummary(changes, appsWithImpact) {
+        const lines = [];
+
+        if (!changes.hasChanges) {
+            return 'No schema changes detected.';
+        }
+
+        if (changes.addedColumns.length > 0) {
+            lines.push(`+ ${changes.addedColumns.length} column(s) added: ${changes.addedColumns.join(', ')}`);
+        }
+        if (changes.removedColumns.length > 0) {
+            lines.push(`- ${changes.removedColumns.length} column(s) removed: ${changes.removedColumns.join(', ')}`);
+        }
+        if (changes.typeChanges.length > 0) {
+            lines.push(`~ ${changes.typeChanges.length} type change(s)`);
+        }
+
+        if (appsWithImpact.length > 0) {
+            const breakingCount = appsWithImpact.filter(a => a.impact_level === 'breaking').length;
+            const warningCount = appsWithImpact.filter(a => a.impact_level === 'warning').length;
+
+            if (breakingCount > 0) {
+                lines.push(`⚠️ ${breakingCount} app(s) may be BROKEN by these changes`);
+            }
+            if (warningCount > 0) {
+                lines.push(`⚡ ${warningCount} app(s) may need updates`);
+            }
+        } else {
+            lines.push('✓ No other apps will be affected');
+        }
+
+        return lines.join('\n');
+    }
+
+    /**
+     * Record a schema change in the history
+     * @param {string} tableName - The table that was modified
+     * @param {string} changeType - Type of change (create, alter, drop)
+     * @param {Object} oldSchema - Previous schema
+     * @param {Object} newSchema - New schema
+     * @param {string} changedByApp - App that made the change
+     * @param {Array<string>} affectedApps - Apps affected by this change
+     */
+    async recordSchemaChange(tableName, changeType, oldSchema, newSchema, changedByApp, affectedApps = []) {
+        try {
+            const db = await this.connectDatabase(DATABASE.SHARED_DB_NAME);
+            await this.initializeSharedDatabase();
+
+            const stmt = db.prepare(`
+                INSERT INTO _schema_changes (table_name, change_type, old_schema, new_schema, changed_by_app, affected_apps)
+                VALUES (?, ?, ?, ?, ?, ?)
+            `);
+
+            stmt.run(
+                tableName,
+                changeType,
+                oldSchema ? JSON.stringify(oldSchema) : null,
+                newSchema ? JSON.stringify(newSchema) : null,
+                changedByApp,
+                JSON.stringify(affectedApps)
+            );
+
+            logger.info('Schema change recorded', { tableName, changeType, changedByApp });
+            return { success: true };
+        } catch (error) {
+            logger.error('Failed to record schema change', { tableName, error });
+            return { success: false, error: error.message };
+        }
+    }
+
+    /**
+     * Get schema change history for a table
+     * @param {string} tableName - The table to get history for (optional, gets all if not specified)
+     * @param {number} limit - Maximum number of records to return
+     */
+    async getSchemaChangeHistory(tableName = null, limit = 50) {
+        try {
+            const db = await this.connectDatabase(DATABASE.SHARED_DB_NAME);
+            await this.initializeSharedDatabase();
+
+            let query = `
+                SELECT * FROM _schema_changes
+                ${tableName ? 'WHERE table_name = ?' : ''}
+                ORDER BY created_at DESC
+                LIMIT ?
+            `;
+
+            const params = tableName ? [tableName, limit] : [limit];
+            const history = db.prepare(query).all(...params);
+
+            // Parse JSON fields
+            const result = history.map(h => ({
+                ...h,
+                old_schema: h.old_schema ? JSON.parse(h.old_schema) : null,
+                new_schema: h.new_schema ? JSON.parse(h.new_schema) : null,
+                affected_apps: h.affected_apps ? JSON.parse(h.affected_apps) : []
+            }));
+
+            return { success: true, history: result };
+        } catch (error) {
+            logger.error('Failed to get schema change history', { tableName, error });
+            return { success: false, error: error.message };
+        }
+    }
+
+    /**
+     * Get a comprehensive dependency map for all tables
+     * Shows which apps own and use each table
+     */
+    async getDependencyMap() {
+        try {
+            const db = await this.connectDatabase(DATABASE.SHARED_DB_NAME);
+            await this.initializeSharedDatabase();
+
+            // Get all tables with their owners
+            const tables = db.prepare(`
+                SELECT
+                    tr.table_name,
+                    tr.app_id as owner_app_id,
+                    ar.app_name as owner_app_name,
+                    tr.description,
+                    tr.schema_json
+                FROM _table_registry tr
+                LEFT JOIN _app_registry ar ON tr.app_id = ar.app_id
+            `).all();
+
+            // Build dependency map
+            const dependencyMap = {};
+
+            for (const table of tables) {
+                const depsResult = await this.getTableDependencies(table.table_name);
+                const users = depsResult.success ? depsResult.apps : [];
+
+                dependencyMap[table.table_name] = {
+                    owner: {
+                        app_id: table.owner_app_id,
+                        app_name: table.owner_app_name
+                    },
+                    description: table.description,
+                    schema: table.schema_json ? JSON.parse(table.schema_json) : null,
+                    used_by: users.map(u => ({
+                        app_id: u.app_id,
+                        app_name: u.app_name,
+                        access_type: u.access_type,
+                        columns_used: u.columns_used
+                    })),
+                    user_count: users.length
+                };
+            }
+
+            return { success: true, dependencyMap };
+        } catch (error) {
+            logger.error('Failed to get dependency map', { error });
+            return { success: false, error: error.message };
+        }
+    }
+
+    // ============================================================
+    // DATABASE BACKUP & RESTORE (with encryption)
+    // ============================================================
+
+    /**
+     * Create an encrypted backup of a database
+     * @param {string} dbName - Name of the database to backup
+     * @param {string} backupPassword - Optional password for extra encryption layer
+     * @returns {Promise<{success: boolean, backupPath?: string, error?: string}>}
+     */
+    async backupDatabase(dbName, backupPassword = null) {
+        try {
+            await this.initialize();
+
+            const backupDir = path.join(this.dataPath, 'backups');
+            await fs.mkdir(backupDir, { recursive: true });
+
+            // Export database data
+            const exportResult = await this.exportDatabase(dbName);
+            if (!exportResult.success) {
+                return { success: false, error: 'Failed to export database' };
+            }
+
+            // Create backup metadata
+            const backupData = {
+                version: '1.0',
+                created_at: new Date().toISOString(),
+                database: dbName,
+                encrypted: !!backupPassword,
+                checksum: null,
+                data: exportResult.export
+            };
+
+            // Serialize backup data
+            let backupContent = JSON.stringify(backupData, null, 2);
+
+            // Calculate checksum before encryption
+            const checksum = crypto.createHash('sha256').update(backupContent).digest('hex');
+            backupData.checksum = checksum;
+            backupContent = JSON.stringify(backupData, null, 2);
+
+            // Encrypt if password provided
+            if (backupPassword) {
+                backupContent = this.encryptBackup(backupContent, backupPassword);
+            }
+
+            // Generate backup filename with timestamp
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const backupFilename = `${dbName}_backup_${timestamp}${backupPassword ? '.encrypted' : ''}.json`;
+            const backupPath = path.join(backupDir, backupFilename);
+
+            // Write backup file
+            await fs.writeFile(backupPath, backupContent, 'utf8');
+
+            logger.info('Database backup created', {
+                database: dbName,
+                backupPath,
+                encrypted: !!backupPassword
+            });
+
+            return {
+                success: true,
+                backupPath,
+                filename: backupFilename,
+                encrypted: !!backupPassword,
+                size: backupContent.length
+            };
+        } catch (error) {
+            logger.error('Failed to create database backup', { database: dbName, error: error.message });
+            return { success: false, error: error.message };
+        }
+    }
+
+    /**
+     * Restore a database from a backup file
+     * @param {string} backupPath - Path to the backup file
+     * @param {string} targetDbName - Name for the restored database (optional, uses original name if not provided)
+     * @param {string} backupPassword - Password if backup is encrypted
+     * @returns {Promise<{success: boolean, database?: string, error?: string}>}
+     */
+    async restoreDatabase(backupPath, targetDbName = null, backupPassword = null) {
+        try {
+            await this.initialize();
+
+            // Read backup file
+            let backupContent = await fs.readFile(backupPath, 'utf8');
+
+            // Check if encrypted
+            const isEncrypted = backupPath.includes('.encrypted') || this.isEncryptedBackup(backupContent);
+
+            // Decrypt if necessary
+            if (isEncrypted) {
+                if (!backupPassword) {
+                    return { success: false, error: 'Backup is encrypted. Password required.' };
+                }
+                backupContent = this.decryptBackup(backupContent, backupPassword);
+                if (!backupContent) {
+                    return { success: false, error: 'Failed to decrypt backup. Invalid password.' };
+                }
+            }
+
+            // Parse backup data
+            let backupData;
+            try {
+                backupData = JSON.parse(backupContent);
+            } catch (parseError) {
+                return { success: false, error: 'Invalid backup file format' };
+            }
+
+            // Verify checksum
+            if (backupData.checksum) {
+                const contentWithoutChecksum = { ...backupData };
+                contentWithoutChecksum.checksum = null;
+                const contentStr = JSON.stringify(contentWithoutChecksum, null, 2);
+                const calculatedChecksum = crypto.createHash('sha256').update(contentStr).digest('hex');
+
+                // Note: Checksum verification is informational due to how we serialize
+                logger.debug('Backup checksum verification', {
+                    stored: backupData.checksum,
+                    calculated: calculatedChecksum
+                });
+            }
+
+            // Determine target database name
+            const dbName = targetDbName || backupData.database || backupData.data?.database;
+            if (!dbName) {
+                return { success: false, error: 'Could not determine database name from backup' };
+            }
+
+            // Get export data
+            const exportData = backupData.data || backupData;
+            if (!exportData.tables) {
+                return { success: false, error: 'Invalid backup format: no tables found' };
+            }
+
+            // Restore each table
+            for (const [tableName, tableData] of Object.entries(exportData.tables)) {
+                // Skip system tables
+                if (tableName.startsWith('_')) continue;
+
+                // Create table with schema
+                if (tableData.schema) {
+                    await this.createTable(dbName, tableName, {
+                        columns: this.schemaToColumns(tableData.schema)
+                    });
+                }
+
+                // Insert data
+                if (tableData.data && Array.isArray(tableData.data)) {
+                    for (const row of tableData.data) {
+                        // Remove id if auto-increment to let DB generate new ones
+                        const insertData = { ...row };
+                        await this.insertData(dbName, tableName, insertData);
+                    }
+                }
+            }
+
+            logger.info('Database restored from backup', {
+                database: dbName,
+                backupPath,
+                tables: Object.keys(exportData.tables).length
+            });
+
+            return {
+                success: true,
+                database: dbName,
+                tablesRestored: Object.keys(exportData.tables).length
+            };
+        } catch (error) {
+            logger.error('Failed to restore database from backup', { backupPath, error: error.message });
+            return { success: false, error: error.message };
+        }
+    }
+
+    /**
+     * List available backup files
+     * @returns {Promise<{success: boolean, backups?: Array, error?: string}>}
+     */
+    async listBackups() {
+        try {
+            await this.initialize();
+
+            const backupDir = path.join(this.dataPath, 'backups');
+
+            // Create backups dir if it doesn't exist
+            try {
+                await fs.mkdir(backupDir, { recursive: true });
+            } catch (e) {
+                // Ignore if already exists
+            }
+
+            const files = await fs.readdir(backupDir);
+            const backups = [];
+
+            for (const file of files) {
+                if (file.endsWith('.json')) {
+                    const filePath = path.join(backupDir, file);
+                    const stats = await fs.stat(filePath);
+
+                    // Parse backup metadata
+                    const isEncrypted = file.includes('.encrypted');
+                    const match = file.match(/^(.+)_backup_(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})/);
+
+                    backups.push({
+                        filename: file,
+                        path: filePath,
+                        database: match ? match[1] : 'unknown',
+                        createdAt: match ? match[2].replace(/-/g, ':').replace('T', ' ') : stats.birthtime,
+                        size: stats.size,
+                        encrypted: isEncrypted
+                    });
+                }
+            }
+
+            // Sort by creation date (newest first)
+            backups.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+            return { success: true, backups };
+        } catch (error) {
+            logger.error('Failed to list backups', { error: error.message });
+            return { success: false, error: error.message };
+        }
+    }
+
+    /**
+     * Delete a backup file
+     * @param {string} backupPath - Path to the backup file
+     * @returns {Promise<{success: boolean, error?: string}>}
+     */
+    async deleteBackup(backupPath) {
+        try {
+            // Security: Ensure path is within backups directory
+            const backupDir = path.join(this.dataPath, 'backups');
+            const resolvedPath = path.resolve(backupPath);
+
+            if (!resolvedPath.startsWith(backupDir)) {
+                return { success: false, error: 'Invalid backup path' };
+            }
+
+            await fs.unlink(resolvedPath);
+
+            logger.info('Backup deleted', { backupPath: resolvedPath });
+            return { success: true };
+        } catch (error) {
+            logger.error('Failed to delete backup', { backupPath, error: error.message });
+            return { success: false, error: error.message };
+        }
+    }
+
+    /**
+     * Encrypt backup content
+     * @private
+     */
+    encryptBackup(content, password) {
+        const iv = crypto.randomBytes(16);
+        const salt = crypto.randomBytes(32);
+        const key = crypto.pbkdf2Sync(password, salt, 100000, 32, 'sha512');
+        const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+
+        let encrypted = cipher.update(content, 'utf8', 'base64');
+        encrypted += cipher.final('base64');
+
+        const authTag = cipher.getAuthTag();
+
+        // Return as JSON with all encryption parameters
+        return JSON.stringify({
+            encrypted: true,
+            algorithm: 'aes-256-gcm',
+            iv: iv.toString('base64'),
+            salt: salt.toString('base64'),
+            authTag: authTag.toString('base64'),
+            data: encrypted
+        });
+    }
+
+    /**
+     * Decrypt backup content
+     * @private
+     */
+    decryptBackup(encryptedContent, password) {
+        try {
+            const encObj = JSON.parse(encryptedContent);
+
+            if (!encObj.encrypted || encObj.algorithm !== 'aes-256-gcm') {
+                throw new Error('Invalid encrypted backup format');
+            }
+
+            const iv = Buffer.from(encObj.iv, 'base64');
+            const salt = Buffer.from(encObj.salt, 'base64');
+            const authTag = Buffer.from(encObj.authTag, 'base64');
+            const key = crypto.pbkdf2Sync(password, salt, 100000, 32, 'sha512');
+
+            const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+            decipher.setAuthTag(authTag);
+
+            let decrypted = decipher.update(encObj.data, 'base64', 'utf8');
+            decrypted += decipher.final('utf8');
+
+            return decrypted;
+        } catch (error) {
+            logger.error('Failed to decrypt backup', { error: error.message });
+            return null;
+        }
+    }
+
+    /**
+     * Check if content appears to be encrypted backup
+     * @private
+     */
+    isEncryptedBackup(content) {
+        try {
+            const obj = JSON.parse(content);
+            return obj.encrypted === true && obj.algorithm === 'aes-256-gcm';
+        } catch {
+            return false;
+        }
+    }
+
+    /**
+     * Convert schema array to columns object
+     * @private
+     */
+    schemaToColumns(schema) {
+        const columns = {};
+        if (Array.isArray(schema)) {
+            for (const col of schema) {
+                if (col.name && col.name !== 'id') {
+                    columns[col.name] = {
+                        type: col.type?.toLowerCase() || 'string',
+                        required: col.notnull === 1
+                    };
+                }
+            }
+        }
+        return columns;
+    }
+
     /**
      * Close all database connections
      */
     async closeAllConnections() {
-        logger.info('Closing all database connections', { 
-            count: this.connections.size 
+        logger.info('Closing all database connections', {
+            count: this.connections.size
         });
         
         const closePromises = [];

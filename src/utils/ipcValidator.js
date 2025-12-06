@@ -1,8 +1,10 @@
 const logger = require('./logger');
+const crypto = require('crypto');
 
 /**
  * IPC Input Validation Module
  * Validates and sanitizes all IPC handler inputs
+ * Includes CSRF token protection for sensitive operations
  */
 class IPCValidator {
     constructor() {
@@ -10,6 +12,21 @@ class IPCValidator {
         this.MAX_STRING_LENGTH = 100000;
         this.MAX_ARRAY_LENGTH = 10000;
         this.MAX_OBJECT_DEPTH = 10;
+
+        // CSRF Protection
+        this.csrfToken = null;
+        this.csrfTokenExpiry = null;
+        this.CSRF_TOKEN_LIFETIME = 24 * 60 * 60 * 1000; // 24 hours
+
+        // Channels that require CSRF validation (sensitive operations)
+        // Note: CSRF protection is disabled for desktop Electron apps because:
+        // 1. There's no web browser context that could be exploited for CSRF attacks
+        // 2. The app runs locally with context isolation enabled
+        // 3. All IPC calls are already validated through other security measures
+        // The CSRF infrastructure is kept for potential future web-based admin panels
+        this.csrfProtectedChannels = new Set([
+            // Currently disabled - desktop apps don't have CSRF attack surface
+        ]);
         
         // Dangerous patterns to block
         this.dangerousPatterns = [
@@ -56,17 +73,23 @@ class IPCValidator {
             }
         };
 
+        // Initialize CSRF token
+        this.generateCsrfToken();
+
         // Schema definitions for each IPC endpoint
         this.schemas = {
+            // API Key
             'set-api-key': {
-                apiKey: { 
-                    type: 'string', 
-                    minLength: 1, 
+                apiKey: {
+                    type: 'string',
+                    minLength: 1,
                     maxLength: 200,
                     pattern: /^[a-zA-Z0-9-_]+$/,
                     sanitize: true
                 }
             },
+
+            // Code Generation & Execution
             'generate-code': {
                 prompt: { type: 'string', minLength: 1, maxLength: 10000 }
             },
@@ -79,14 +102,13 @@ class IPCValidator {
                 code: { type: 'string', minLength: 1, maxLength: 100000 },
                 sessionId: { type: 'string', pattern: /^session_\d+_[a-z0-9]+$/ }
             },
-            'cleanup-session': {
-                sessionId: { type: 'string', pattern: /^session_\d+_[a-z0-9]+$/ }
-            },
-            'update-config': {
-                config: { type: 'object', required: [] }
-            },
             'scan-code-security': {
                 code: { type: 'string', minLength: 1, maxLength: 100000 }
+            },
+
+            // Session Management
+            'cleanup-session': {
+                sessionId: { type: 'string', pattern: /^session_\d+_[a-z0-9]+$/ }
             },
             'create-session': {
                 sessionId: { type: 'string', pattern: /^session_\d+_[a-z0-9]+$/ },
@@ -98,16 +120,199 @@ class IPCValidator {
             'get-session-history': {
                 limit: { type: 'number', min: 1, max: 100, optional: true }
             },
+
+            // Config
+            'update-config': {
+                config: { type: 'object', required: [] }
+            },
+            'update-cache-config': {
+                config: { type: 'object' }
+            },
+
+            // Feedback
             'submit-feedback': {
                 feedback: {
                     type: 'object',
                     required: ['sessionId', 'rating']
                 }
             },
-            'update-cache-config': {
-                config: { type: 'object' }
+
+            // Database Operations
+            'db-list-tables': {
+                dbName: { type: 'string', minLength: 1, maxLength: 100, pattern: /^[a-zA-Z0-9_-]+$/ }
+            },
+            'db-create-table': {
+                dbName: { type: 'string', minLength: 1, maxLength: 100, pattern: /^[a-zA-Z0-9_-]+$/ },
+                tableName: { type: 'string', minLength: 1, maxLength: 100, pattern: /^[a-zA-Z_][a-zA-Z0-9_]*$/ },
+                schema: { type: 'object', required: [] }
+            },
+            'db-insert-data': {
+                dbName: { type: 'string', minLength: 1, maxLength: 100, pattern: /^[a-zA-Z0-9_-]+$/ },
+                tableName: { type: 'string', minLength: 1, maxLength: 100, pattern: /^[a-zA-Z_][a-zA-Z0-9_]*$/ },
+                data: { type: 'object', required: [] }
+            },
+            'db-query-data': {
+                dbName: { type: 'string', minLength: 1, maxLength: 100, pattern: /^[a-zA-Z0-9_-]+$/ },
+                tableName: { type: 'string', minLength: 1, maxLength: 100, pattern: /^[a-zA-Z_][a-zA-Z0-9_]*$/ },
+                options: { type: 'object', optional: true }
+            },
+            'db-update-data': {
+                dbName: { type: 'string', minLength: 1, maxLength: 100, pattern: /^[a-zA-Z0-9_-]+$/ },
+                tableName: { type: 'string', minLength: 1, maxLength: 100, pattern: /^[a-zA-Z_][a-zA-Z0-9_]*$/ },
+                id: { type: 'number', min: 1 },
+                data: { type: 'object', required: [] }
+            },
+            'db-delete-data': {
+                dbName: { type: 'string', minLength: 1, maxLength: 100, pattern: /^[a-zA-Z0-9_-]+$/ },
+                tableName: { type: 'string', minLength: 1, maxLength: 100, pattern: /^[a-zA-Z_][a-zA-Z0-9_]*$/ },
+                id: { type: 'number', min: 1 }
+            },
+            'db-execute-sql': {
+                dbName: { type: 'string', minLength: 1, maxLength: 100, pattern: /^[a-zA-Z0-9_-]+$/ },
+                sql: { type: 'string', minLength: 1, maxLength: 10000 },
+                params: { type: 'array', maxLength: 100, optional: true }
+            },
+            'db-export-database': {
+                dbName: { type: 'string', minLength: 1, maxLength: 100, pattern: /^[a-zA-Z0-9_-]+$/ }
+            },
+            'db-drop-table': {
+                dbName: { type: 'string', minLength: 1, maxLength: 100, pattern: /^[a-zA-Z0-9_-]+$/ },
+                tableName: { type: 'string', minLength: 1, maxLength: 100, pattern: /^[a-zA-Z_][a-zA-Z0-9_]*$/ }
+            },
+
+            // Multi-app Registry
+            'db-register-app': {
+                appId: { type: 'string', minLength: 1, maxLength: 100, pattern: /^[a-zA-Z0-9_-]+$/ },
+                appName: { type: 'string', minLength: 1, maxLength: 200 },
+                description: { type: 'string', maxLength: 1000, optional: true }
+            },
+            'db-get-app-info': {
+                appId: { type: 'string', minLength: 1, maxLength: 100, pattern: /^[a-zA-Z0-9_-]+$/ }
+            },
+            'db-get-related-tables': {
+                tableName: { type: 'string', minLength: 1, maxLength: 100, pattern: /^[a-zA-Z_][a-zA-Z0-9_]*$/ }
+            },
+            'db-create-table-with-owner': {
+                dbName: { type: 'string', minLength: 1, maxLength: 100, pattern: /^[a-zA-Z0-9_-]+$/ },
+                tableName: { type: 'string', minLength: 1, maxLength: 100, pattern: /^[a-zA-Z_][a-zA-Z0-9_]*$/ },
+                schema: { type: 'object', required: [] },
+                appId: { type: 'string', minLength: 1, maxLength: 100 },
+                description: { type: 'string', maxLength: 1000, optional: true }
+            },
+            'db-record-relationship': {
+                sourceTable: { type: 'string', minLength: 1, maxLength: 100, pattern: /^[a-zA-Z_][a-zA-Z0-9_]*$/ },
+                targetTable: { type: 'string', minLength: 1, maxLength: 100, pattern: /^[a-zA-Z_][a-zA-Z0-9_]*$/ },
+                relationshipType: { type: 'string', minLength: 1, maxLength: 50 },
+                description: { type: 'string', maxLength: 500, optional: true }
+            },
+
+            // AI Schema Generation
+            'db-generate-schema': {
+                description: { type: 'string', minLength: 1, maxLength: 5000 }
+            },
+            'db-generate-database-script': {
+                description: { type: 'string', minLength: 1, maxLength: 5000 }
+            },
+            'db-suggest-improvements': {
+                schema: { type: 'object', required: [] },
+                context: { type: 'string', maxLength: 2000, optional: true }
+            },
+            'db-generate-code-with-data': {
+                prompt: { type: 'string', minLength: 1, maxLength: 10000 },
+                dbName: { type: 'string', minLength: 1, maxLength: 100, pattern: /^[a-zA-Z0-9_-]+$/, optional: true },
+                includeData: { type: 'boolean', optional: true }
+            },
+
+            // Performance Dashboard
+            'acknowledge-alert': {
+                alertId: { type: 'string', minLength: 1, maxLength: 100 }
+            },
+            'export-performance-data': {
+                format: { type: 'string', pattern: /^(json|csv|html)$/, optional: true }
+            },
+
+            // App Password
+            'set-app-password': {
+                password: { type: 'string', minLength: 4, maxLength: 100 }
+            },
+            'verify-app-password': {
+                password: { type: 'string', minLength: 1, maxLength: 100 }
+            },
+            'change-app-password': {
+                currentPassword: { type: 'string', minLength: 1, maxLength: 100 },
+                newPassword: { type: 'string', minLength: 4, maxLength: 100 }
+            },
+            'remove-app-password': {
+                currentPassword: { type: 'string', minLength: 1, maxLength: 100 }
             }
         };
+    }
+
+    // ============================================================
+    // CSRF TOKEN METHODS
+    // ============================================================
+
+    /**
+     * Generate a new CSRF token
+     * @returns {string} The generated token
+     */
+    generateCsrfToken() {
+        this.csrfToken = crypto.randomBytes(32).toString('hex');
+        this.csrfTokenExpiry = Date.now() + this.CSRF_TOKEN_LIFETIME;
+        logger.debug('CSRF token generated', { expiry: new Date(this.csrfTokenExpiry).toISOString() });
+        return this.csrfToken;
+    }
+
+    /**
+     * Get the current CSRF token (regenerate if expired)
+     * @returns {string} The current valid token
+     */
+    getCsrfToken() {
+        if (!this.csrfToken || Date.now() > this.csrfTokenExpiry) {
+            this.generateCsrfToken();
+        }
+        return this.csrfToken;
+    }
+
+    /**
+     * Validate a CSRF token
+     * @param {string} token - The token to validate
+     * @returns {boolean} Whether the token is valid
+     */
+    validateCsrfToken(token) {
+        if (!token || typeof token !== 'string') {
+            return false;
+        }
+
+        // Check if our token exists and is not expired
+        if (!this.csrfToken || Date.now() > this.csrfTokenExpiry) {
+            logger.warn('CSRF token expired or missing');
+            return false;
+        }
+
+        // Timing-safe comparison
+        try {
+            const tokenBuffer = Buffer.from(token, 'hex');
+            const validBuffer = Buffer.from(this.csrfToken, 'hex');
+
+            if (tokenBuffer.length !== validBuffer.length) {
+                return false;
+            }
+
+            return crypto.timingSafeEqual(tokenBuffer, validBuffer);
+        } catch (error) {
+            logger.warn('CSRF token validation error', { error: error.message });
+            return false;
+        }
+    }
+
+    /**
+     * Check if a channel requires CSRF protection
+     * @param {string} channel - The IPC channel name
+     * @returns {boolean} Whether the channel requires CSRF validation
+     */
+    requiresCsrfProtection(channel) {
+        return this.csrfProtectedChannels.has(channel);
     }
 
     /**
@@ -303,13 +508,36 @@ class IPCValidator {
     }
 
     /**
-     * Create validated IPC handler wrapper
+     * Create validated IPC handler wrapper with optional CSRF protection
+     * @param {string} channel - The IPC channel name
+     * @param {Function} handler - The handler function
+     * @param {Object} options - Options including skipCsrf for non-sensitive reads
      */
-    createValidatedHandler(channel, handler) {
+    createValidatedHandler(channel, handler, options = {}) {
         return async (event, ...args) => {
             try {
                 // Combine args into single input object
                 const input = args.length === 1 ? args[0] : args;
+
+                // CSRF validation for protected channels
+                if (this.requiresCsrfProtection(channel) && !options.skipCsrf) {
+                    const csrfToken = input && typeof input === 'object' ? input._csrf : null;
+                    if (!this.validateCsrfToken(csrfToken)) {
+                        logger.logSecurityEvent('csrf_validation_failed', {
+                            channel,
+                            hasToken: !!csrfToken
+                        });
+                        return {
+                            success: false,
+                            error: 'CSRF validation failed. Please refresh the page.',
+                            code: 'CSRF_INVALID'
+                        };
+                    }
+                    // Remove CSRF token from input before passing to handler
+                    if (input && typeof input === 'object') {
+                        delete input._csrf;
+                    }
+                }
 
                 // Validate input
                 const validation = this.validate(channel, input);

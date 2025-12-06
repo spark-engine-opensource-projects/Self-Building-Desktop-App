@@ -93,7 +93,15 @@ module.exports = {
         MAX_SAMPLE_ROWS_PER_TABLE: 3,
         SCHEMA_CACHE_TTL_MS: 60000, // 1 minute
         MAX_APPS: 50,
-        MAX_TABLES_PER_APP: 100
+        MAX_TABLES_PER_APP: 100,
+        // Encryption settings
+        ENCRYPTION: {
+            ENABLED: true,
+            CIPHER: 'sqlcipher',
+            KDF_ITERATIONS: 256000, // SQLCipher default for v4
+            PAGE_SIZE: 4096,
+            KEY_DERIVATION: 'pbkdf2' // Key derivation function
+        }
     },
 
     // Network

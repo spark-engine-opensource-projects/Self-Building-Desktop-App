@@ -10,6 +10,172 @@
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+    <!-- Password Lock Screen Overlay -->
+    <div id="lockScreen" class="lock-screen" style="display: none;">
+        <div class="lock-container">
+            <div class="lock-icon">🔐</div>
+            <h2>App Locked</h2>
+            <p id="lockMessage">Enter your password to unlock</p>
+            <div class="lock-form">
+                <input type="password" id="unlockPassword" placeholder="Enter password" autocomplete="current-password">
+                <button id="unlockBtn" class="btn btn-primary">Unlock</button>
+            </div>
+            <p id="lockError" class="lock-error" style="display: none;"></p>
+            <p class="lock-hint">Session locked due to inactivity</p>
+        </div>
+    </div>
+
+    <!-- First-Time Password Setup Overlay -->
+    <div id="passwordSetupScreen" class="lock-screen" style="display: none;">
+        <div class="lock-container">
+            <div class="lock-icon">🔑</div>
+            <h2>Set Up Password Protection</h2>
+            <p>Secure your app with a password (optional)</p>
+            <div class="setup-form">
+                <input type="password" id="setupPassword" placeholder="Create password (min 4 chars)" autocomplete="new-password">
+                <input type="password" id="confirmPassword" placeholder="Confirm password" autocomplete="new-password">
+                <div class="setup-actions">
+                    <button id="setupPasswordBtn" class="btn btn-primary">Set Password</button>
+                    <button id="skipPasswordBtn" class="btn btn-outline">Skip for Now</button>
+                </div>
+            </div>
+            <p id="setupError" class="lock-error" style="display: none;"></p>
+        </div>
+    </div>
+
+    <!-- Welcome Modal (First-Time Users) -->
+    <div id="welcomeModal" class="welcome-modal" style="display: none;">
+        <div class="welcome-container">
+            <div class="welcome-header">
+                <div class="welcome-icon">🤖</div>
+                <h1>Welcome to AI App Builder!</h1>
+                <p class="welcome-subtitle">Build custom applications using natural language</p>
+            </div>
+
+            <div class="welcome-content">
+                <div class="welcome-features">
+                    <div class="feature-item">
+                        <span class="feature-icon">💬</span>
+                        <div class="feature-text">
+                            <strong>Describe in Plain English</strong>
+                            <span>Just tell the AI what you want to build</span>
+                        </div>
+                    </div>
+                    <div class="feature-item">
+                        <span class="feature-icon">⚡</span>
+                        <div class="feature-text">
+                            <strong>Instant Code Generation</strong>
+                            <span>Get working apps in seconds</span>
+                        </div>
+                    </div>
+                    <div class="feature-item">
+                        <span class="feature-icon">🗄️</span>
+                        <div class="feature-text">
+                            <strong>Built-in Database</strong>
+                            <span>Your data is saved automatically</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="welcome-step">
+                    <div class="step-badge">To Get Started</div>
+                    <p>You'll need an <strong>Anthropic API key</strong> to connect to the AI.</p>
+                    <a href="https://console.anthropic.com/" target="_blank" class="api-link">
+                        Get your free API key →
+                    </a>
+                    <p class="api-note">New accounts include free credits to try it out!</p>
+                </div>
+            </div>
+
+            <div class="welcome-actions">
+                <button id="welcomeGetStartedBtn" class="btn btn-primary btn-large">Get Started</button>
+            </div>
+
+            <label class="welcome-checkbox">
+                <input type="checkbox" id="dontShowWelcomeAgain">
+                <span>Don't show this again</span>
+            </label>
+        </div>
+    </div>
+
+    <!-- Password Prompt Modal (After API Key Setup) -->
+    <div id="passwordPromptModal" class="modal" style="display: none;">
+        <div class="modal-content password-prompt-content">
+            <div class="prompt-icon">🔐</div>
+            <h3>Protect Your App?</h3>
+            <p>Would you like to add password protection to keep your apps and API key secure?</p>
+            <div class="prompt-actions">
+                <button id="promptSetPasswordBtn" class="btn btn-primary">Yes, Set Password</button>
+                <button id="promptSkipPasswordBtn" class="btn btn-outline">Maybe Later</button>
+            </div>
+            <p class="prompt-note">You can always enable this later in Settings</p>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="settingsModal" class="modal" style="display: none;">
+        <div class="modal-content settings-modal-content">
+            <div class="modal-header">
+                <h3>⚙️ Settings</h3>
+                <button id="closeSettingsBtn" class="modal-close">×</button>
+            </div>
+            <div class="settings-content">
+                <!-- Password Section -->
+                <div class="settings-section">
+                    <h4>🔐 Password Protection</h4>
+                    <div id="passwordStatus" class="password-status">
+                        <span class="status-label">Status:</span>
+                        <span id="passwordStatusText" class="status-value">Checking...</span>
+                    </div>
+                    <div id="passwordActions" class="password-actions">
+                        <!-- Actions populated by JS -->
+                    </div>
+                </div>
+
+                <!-- Session Timeout Section -->
+                <div class="settings-section">
+                    <h4>⏱️ Session Timeout</h4>
+                    <p class="settings-description">Automatically lock the app after inactivity</p>
+                    <div class="timeout-settings">
+                        <label for="timeoutSelect">Lock after:</label>
+                        <select id="timeoutSelect">
+                            <option value="0">Never</option>
+                            <option value="60000">1 minute</option>
+                            <option value="300000" selected>5 minutes</option>
+                            <option value="600000">10 minutes</option>
+                            <option value="900000">15 minutes</option>
+                            <option value="1800000">30 minutes</option>
+                            <option value="3600000">1 hour</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Change Password Section (shown when password is set) -->
+                <div id="changePasswordSection" class="settings-section" style="display: none;">
+                    <h4>🔄 Change Password</h4>
+                    <div class="change-password-form">
+                        <input type="password" id="currentPasswordInput" placeholder="Current password">
+                        <input type="password" id="newPasswordInput" placeholder="New password (min 4 chars)">
+                        <input type="password" id="confirmNewPasswordInput" placeholder="Confirm new password">
+                        <button id="changePasswordBtn" class="btn btn-primary">Change Password</button>
+                    </div>
+                    <p id="changePasswordError" class="settings-error" style="display: none;"></p>
+                    <p id="changePasswordSuccess" class="settings-success" style="display: none;"></p>
+                </div>
+
+                <!-- Remove Password Section (shown when password is set) -->
+                <div id="removePasswordSection" class="settings-section" style="display: none;">
+                    <h4>🗑️ Remove Password</h4>
+                    <p class="settings-warning">Warning: This will remove password protection from the app.</p>
+                    <div class="remove-password-form">
+                        <input type="password" id="removePasswordInput" placeholder="Enter current password to confirm">
+                        <button id="removePasswordBtn" class="btn btn-danger">Remove Password</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div class="container">
         <header>
             <div class="header-controls">
@@ -22,7 +188,10 @@
                     </svg>
                 </button>
                 <button id="toggleDatabaseBtn" class="nav-btn">🗄️ Database</button>
+                <button id="toggleAppRegistryBtn" class="nav-btn">📱 App Registry</button>
                 <button id="performanceDashboardBtn" class="nav-btn">📊 Performance</button>
+                <button id="settingsBtn" class="nav-btn">⚙️ Settings</button>
+                <button id="lockAppBtn" class="nav-btn" title="Lock App" style="display: none;">🔒 Lock</button>
             </div>
             <h1>🤖 AI Dynamic Application Builder</h1>
             <p>Powered by Claude - Generate and execute code from natural language</p>
@@ -76,46 +245,76 @@
 
         <!-- Code Generation -->
         <section class="code-generation" id="codeGeneration" style="display: none;">
-            <h2>💡 Describe Your Application</h2>
-
-            <!-- Quick Start Templates -->
-            <div class="quick-templates" style="margin-bottom: 15px;">
-                <h3 style="font-size: 14px; margin-bottom: 8px; color: #64748b;">⚡ Quick Start Templates:</h3>
-                <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                    <button class="template-btn" data-template="todo">📝 Todo List</button>
-                    <button class="template-btn" data-template="notes">📔 Note Taking</button>
-                    <button class="template-btn" data-template="contacts">👥 Contacts</button>
-                    <button class="template-btn" data-template="expenses">💰 Expense Tracker</button>
-                    <button class="template-btn" data-template="inventory">📦 Inventory</button>
-                    <button class="template-btn" data-template="diary">📖 Diary/Journal</button>
+            <!-- Quick Start Templates - Prominent Cards -->
+            <div class="quick-start-section">
+                <h2>⚡ Quick Start</h2>
+                <p class="section-subtitle">Click a template to get started instantly</p>
+                <div class="template-cards">
+                    <button class="template-card" data-template="todo">
+                        <span class="template-card-icon">📝</span>
+                        <span class="template-card-title">Todo List</span>
+                        <span class="template-card-desc">Track tasks with checkboxes</span>
+                    </button>
+                    <button class="template-card" data-template="notes">
+                        <span class="template-card-icon">📔</span>
+                        <span class="template-card-title">Notes</span>
+                        <span class="template-card-desc">Organize your thoughts</span>
+                    </button>
+                    <button class="template-card" data-template="contacts">
+                        <span class="template-card-icon">👥</span>
+                        <span class="template-card-title">Contacts</span>
+                        <span class="template-card-desc">Manage people & info</span>
+                    </button>
+                    <button class="template-card" data-template="expenses">
+                        <span class="template-card-icon">💰</span>
+                        <span class="template-card-title">Expenses</span>
+                        <span class="template-card-desc">Track spending & budgets</span>
+                    </button>
+                    <button class="template-card" data-template="inventory">
+                        <span class="template-card-icon">📦</span>
+                        <span class="template-card-title">Inventory</span>
+                        <span class="template-card-desc">Manage stock & items</span>
+                    </button>
+                    <button class="template-card" data-template="diary">
+                        <span class="template-card-icon">📖</span>
+                        <span class="template-card-title">Journal</span>
+                        <span class="template-card-desc">Daily entries & memories</span>
+                    </button>
                 </div>
             </div>
 
-            <div class="input-group">
-                <textarea id="promptInput" placeholder="Describe what you want to build...
+            <!-- Custom Description -->
+            <div class="custom-build-section">
+                <div class="section-divider">
+                    <span>or describe your own</span>
+                </div>
+                <h2>💡 Build Something Custom</h2>
+                <div class="input-group">
+                    <textarea id="promptInput" placeholder="Describe what you want to build...
 
 Examples:
-• Create a todo list app with add, complete, and delete functionality
-• Build a note-taking app with categories and search
-• Make a contact manager with phone and email fields
-• Create an expense tracker with charts and categories"></textarea>
-                <button id="generateBtn" class="btn btn-primary">
-                    <span class="btn-text">Generate Code</span>
-                    <div class="spinner" style="display: none;"></div>
-                </button>
+• A recipe manager with ingredients and cooking steps
+• A habit tracker with daily streaks
+• A bookmark organizer with tags and categories
+• A workout log with exercises and sets"></textarea>
+                    <button id="generateBtn" class="btn btn-primary">
+                        <span class="btn-text">Generate Code</span>
+                        <div class="spinner" style="display: none;"></div>
+                    </button>
+                </div>
             </div>
         </section>
 
         <!-- Generated Code Display -->
         <section class="code-display" id="codeDisplay" style="display: none;">
             <div class="code-header">
-                <h2>📋 Generated Code</h2>
+                <h2>✅ Code Ready</h2>
                 <div class="code-actions">
-                    <button id="executeBtn" class="btn btn-success">▶️ Execute</button>
+                    <button id="executeBtn" class="btn btn-success btn-large">▶️ Run App</button>
                     <button id="clearBtn" class="btn btn-secondary">🗑️ Clear</button>
                 </div>
             </div>
-            
+
             <div class="code-info">
                 <div class="info-item">
                     <strong>Description:</strong>
@@ -127,7 +326,19 @@ Examples:
                 </div>
             </div>
 
-            <div class="code-container">
+            <!-- Collapsible Code Section -->
+            <div class="code-toggle-section">
+                <button id="toggleCodeBtn" class="code-toggle-btn">
+                    <span class="toggle-icon">▶</span>
+                    <span class="toggle-text">Show Code</span>
+                    <span class="code-lines-count" id="codeLinesCount"></span>
+                </button>
+            </div>
+
+            <div class="code-container" id="codeContainer" style="display: none;">
+                <div class="code-toolbar">
+                    <button id="copyCodeBtn" class="btn btn-sm btn-outline" title="Copy to clipboard">📋 Copy</button>
+                </div>
                 <pre><code id="generatedCode"></code></pre>
             </div>
         </section>
@@ -411,6 +622,91 @@ Examples:
             </div>
         </section>
 
+        <!-- App Registry Section -->
+        <section class="app-registry-section" id="appRegistrySection" style="display: none;">
+            <div class="section-header">
+                <h2>📱 App Registry</h2>
+                <div class="section-actions">
+                    <button id="refreshAppRegistryBtn" class="btn btn-outline">🔄 Refresh</button>
+                    <button id="showDependencyMapBtn" class="btn btn-secondary">🗺️ Dependency Map</button>
+                </div>
+            </div>
+
+            <!-- Deprecated Apps Alert -->
+            <div id="deprecatedAppsAlert" class="deprecated-alert" style="display: none;">
+                <div class="alert-icon">⚠️</div>
+                <div class="alert-content">
+                    <strong>Apps Need Attention</strong>
+                    <p id="deprecatedAlertMessage">Some apps were affected by schema changes and need regeneration.</p>
+                </div>
+                <button id="viewDeprecatedBtn" class="btn btn-warning btn-sm">View Affected Apps</button>
+            </div>
+
+            <!-- App Registry Tabs -->
+            <div class="registry-tabs">
+                <button class="registry-tab active" data-tab="all-apps">All Apps</button>
+                <button class="registry-tab" data-tab="deprecated-apps">
+                    Deprecated <span id="deprecatedCount" class="badge">0</span>
+                </button>
+                <button class="registry-tab" data-tab="schema-history">Schema History</button>
+            </div>
+
+            <!-- All Apps Tab -->
+            <div id="allAppsTab" class="registry-tab-content active">
+                <div class="apps-grid" id="appsGrid">
+                    <p class="no-data">No registered apps yet. Generate some apps to see them here!</p>
+                </div>
+            </div>
+
+            <!-- Deprecated Apps Tab -->
+            <div id="deprecatedAppsTab" class="registry-tab-content" style="display: none;">
+                <div class="deprecated-apps-header">
+                    <p class="tab-description">These apps were affected by database schema changes and may not function correctly. You can regenerate them to update their code.</p>
+                    <button id="regenerateAllBtn" class="btn btn-primary" disabled>🔄 Regenerate All</button>
+                </div>
+                <div class="deprecated-apps-list" id="deprecatedAppsList">
+                    <p class="no-data">No deprecated apps! All your apps are up to date.</p>
+                </div>
+            </div>
+
+            <!-- Schema History Tab -->
+            <div id="schemaHistoryTab" class="registry-tab-content" style="display: none;">
+                <div class="schema-history-header">
+                    <p class="tab-description">Track all schema changes and their impact on your apps.</p>
+                </div>
+                <div class="schema-history-list" id="schemaHistoryList">
+                    <p class="no-data">No schema changes recorded yet.</p>
+                </div>
+            </div>
+
+            <!-- Dependency Map Modal -->
+            <div id="dependencyMapModal" class="modal" style="display: none;">
+                <div class="modal-content dependency-modal">
+                    <div class="modal-header">
+                        <h3>🗺️ App-Table Dependency Map</h3>
+                        <button id="closeDependencyMapBtn" class="modal-close">×</button>
+                    </div>
+                    <div class="dependency-map-content" id="dependencyMapContent">
+                        <p class="no-data">Loading dependency map...</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Regeneration Modal -->
+            <div id="regenerationModal" class="modal" style="display: none;">
+                <div class="modal-content regeneration-modal">
+                    <div class="modal-header">
+                        <h3>🔄 Regenerating App</h3>
+                    </div>
+                    <div class="regeneration-content">
+                        <div class="regeneration-spinner"></div>
+                        <p id="regenerationStatus">Regenerating app with updated schema context...</p>
+                        <div id="regenerationProgress" class="regeneration-progress"></div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
         <!-- Session Info -->
         <footer class="session-info">
             <span>Session: <code id="sessionId">Not started</code></span>
@@ -429,6 +725,7 @@ Examples:
     <script src="components/DataChangeBroadcaster.js"></script>
     <script src="components/AppPanel.js"></script>
     <script src="components/AppManager.js"></script>
+    <script src="SecurityManager.js"></script>
     <script src="renderer.js"></script>
 </body>
 </html>

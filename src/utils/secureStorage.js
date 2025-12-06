@@ -1,6 +1,7 @@
 const { safeStorage } = require('electron');
 const fs = require('fs').promises;
 const path = require('path');
+const crypto = require('crypto');
 const { app } = require('electron');
 const logger = require('./logger');
 
@@ -331,17 +332,135 @@ class SecureStorage {
 
         try {
             const encryptedBuffer = Buffer.from(base64Data, 'base64');
-            
+
             // Verify we can decrypt it
             safeStorage.decryptString(encryptedBuffer);
-            
+
             // Save the encrypted data
             await fs.writeFile(this.encryptedDataFile, encryptedBuffer);
-            
+
             logger.info('Encrypted data imported successfully');
             return true;
         } catch (error) {
             logger.error('Failed to import encrypted data', error);
+            throw error;
+        }
+    }
+
+    // ============================================================
+    // APP PASSWORD PROTECTION (Optional)
+    // ============================================================
+
+    /**
+     * Hash password using PBKDF2
+     * @param {string} password - Plain text password
+     * @param {string} salt - Salt for hashing (or generate new one)
+     * @returns {Object} - { hash, salt }
+     */
+    hashPassword(password, salt = null) {
+        const useSalt = salt || crypto.randomBytes(32).toString('hex');
+        const hash = crypto.pbkdf2Sync(password, useSalt, 100000, 64, 'sha512').toString('hex');
+        return { hash, salt: useSalt };
+    }
+
+    /**
+     * Set app password (optional security feature)
+     * @param {string} password - The password to set
+     * @returns {Promise<boolean>}
+     */
+    async setAppPassword(password) {
+        if (!password || password.length < 4) {
+            throw new Error('Password must be at least 4 characters');
+        }
+
+        try {
+            const { hash, salt } = this.hashPassword(password);
+            await this.store('app_password', { hash, salt });
+            logger.info('App password set successfully');
+            return true;
+        } catch (error) {
+            logger.error('Failed to set app password', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Verify app password
+     * @param {string} password - Password to verify
+     * @returns {Promise<boolean>}
+     */
+    async verifyAppPassword(password) {
+        try {
+            const stored = await this.retrieve('app_password');
+            if (!stored) {
+                // No password set, always valid
+                return true;
+            }
+
+            const { hash } = this.hashPassword(password, stored.salt);
+            const isValid = crypto.timingSafeEqual(
+                Buffer.from(hash, 'hex'),
+                Buffer.from(stored.hash, 'hex')
+            );
+
+            if (!isValid) {
+                logger.logSecurityEvent('invalid_app_password_attempt', {
+                    timestamp: new Date().toISOString()
+                });
+            }
+
+            return isValid;
+        } catch (error) {
+            logger.error('Failed to verify app password', error);
+            return false;
+        }
+    }
+
+    /**
+     * Check if app password is set
+     * @returns {Promise<boolean>}
+     */
+    async hasAppPassword() {
+        return await this.has('app_password');
+    }
+
+    /**
+     * Remove app password
+     * @param {string} currentPassword - Current password for verification
+     * @returns {Promise<boolean>}
+     */
+    async removeAppPassword(currentPassword) {
+        try {
+            const isValid = await this.verifyAppPassword(currentPassword);
+            if (!isValid) {
+                throw new Error('Current password is incorrect');
+            }
+
+            await this.remove('app_password');
+            logger.info('App password removed');
+            return true;
+        } catch (error) {
+            logger.error('Failed to remove app password', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Change app password
+     * @param {string} currentPassword - Current password
+     * @param {string} newPassword - New password
+     * @returns {Promise<boolean>}
+     */
+    async changeAppPassword(currentPassword, newPassword) {
+        try {
+            const isValid = await this.verifyAppPassword(currentPassword);
+            if (!isValid) {
+                throw new Error('Current password is incorrect');
+            }
+
+            return await this.setAppPassword(newPassword);
+        } catch (error) {
+            logger.error('Failed to change app password', error);
             throw error;
         }
     }

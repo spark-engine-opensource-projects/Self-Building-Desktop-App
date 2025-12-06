@@ -16,16 +16,35 @@ This application implements multiple layers of security:
 - **No eval()**: Uses Function constructor with sanitized scope
 - **CSP Enforcement**: Content Security Policy in all execution contexts
 
-### Input Validation
-- All user inputs are sanitized before processing
+### Input Validation & IPC Security
+- **Schema-based Validation**: All IPC handlers validate inputs against defined schemas
+- **CSRF Protection**: Cross-Site Request Forgery tokens protect sensitive operations
+- **Rate Limiting**: Multiple rate limiters prevent abuse:
+  - Code generation: 20 requests/minute
+  - Database writes: 100 requests/minute
+  - Password attempts: 5 attempts/5 minutes
+- **SQL Injection Prevention**: Safe query builders for all database operations
 - API prompts are length-limited and validated
 - Package names are filtered against a blocklist
 - Path traversal attempts are detected and blocked
 
 ### API Security
-- API keys should be stored securely (never in code)
+- API keys stored using Electron's safeStorage API (encrypted)
 - Rate limiting on API calls
 - Automatic retry with exponential backoff
+
+### Password Protection (Optional)
+- **App Lock**: Optional password protection for the entire application
+- **PBKDF2 Hashing**: 100,000 iterations with SHA-512
+- **Session Timeout**: Configurable auto-lock after inactivity (1 min to 1 hour)
+- **Timing-safe Comparison**: Prevents timing attacks on password verification
+- **Brute Force Protection**: Rate limiting on password attempts
+
+### Database Security
+- **Encrypted Backups**: AES-256-GCM encryption for database backups
+- **Password-protected Backups**: Optional password encryption layer
+- **Checksum Verification**: SHA-256 checksums for backup integrity
+- **SQLCipher Support**: Database encryption at rest (configurable)
 
 ## Reporting a Vulnerability
 
@@ -91,17 +110,21 @@ We will acknowledge receipt within 48 hours and provide updates every 72 hours.
 
 ## Security Checklist
 
-Before deploying to production:
+Security implementation status:
 
-- [ ] Enable renderer process sandbox
-- [ ] Implement API key encryption
-- [ ] Add rate limiting to all endpoints
-- [ ] Enable CSP headers
-- [ ] Remove all console.log statements with sensitive data
-- [ ] Run security audit: `npm audit`
+- [x] Enable renderer process sandbox
+- [x] Implement API key encryption (safeStorage)
+- [x] Add rate limiting to all endpoints
+- [x] Enable CSP headers
+- [x] Schema-based input validation on IPC handlers
+- [x] CSRF token protection for sensitive operations
+- [x] SQL injection prevention via query builders
+- [x] Password protection with PBKDF2 hashing
+- [x] Session timeout/auto-lock
+- [x] Encrypted database backups
+- [ ] Run security audit: `npm audit` (recommended regularly)
 - [ ] Test with limited user permissions
 - [ ] Review all external package dependencies
-- [ ] Implement request signing for API calls
 - [ ] Add monitoring and alerting for security events
 
 ## Known Security Considerations

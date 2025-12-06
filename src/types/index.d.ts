@@ -146,7 +146,16 @@ export interface ConfigObject {
   security: SecurityConfig;
   monitoring: MonitoringConfig;
   ai: AIConfig;
+  database: DatabaseConfig;
   ui: UIConfig;
+}
+
+export interface DatabaseConfig {
+  encryption: {
+    enabled: boolean;
+    cipher: string;
+    kdfIterations: number;
+  };
 }
 
 export interface ExecutionConfig {

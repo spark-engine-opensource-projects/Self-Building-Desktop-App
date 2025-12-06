@@ -111,6 +111,22 @@ class DynamicAppBuilder {
             windowMs: CONSTANTS.RATE_LIMITS.API_KEY_VALIDATION.WINDOW_MS,
             algorithm: 'sliding_window'
         });
+        // Rate limiters for critical endpoints
+        this.codeGenRateLimiter = new RateLimiter({
+            maxRequests: 20,
+            windowMs: 60000, // 20 requests per minute
+            algorithm: 'sliding_window'
+        });
+        this.dbWriteRateLimiter = new RateLimiter({
+            maxRequests: 100,
+            windowMs: 60000, // 100 writes per minute
+            algorithm: 'sliding_window'
+        });
+        this.passwordAttemptLimiter = new RateLimiter({
+            maxRequests: 5,
+            windowMs: 300000, // 5 attempts per 5 minutes
+            algorithm: 'sliding_window'
+        });
         this.config = {
             maxConcurrentExecutions: CONSTANTS.EXECUTION.MAX_CONCURRENT,
             executionTimeout: CONSTANTS.EXECUTION.TIMEOUT_MS,
@@ -453,6 +469,13 @@ class DynamicAppBuilder {
         });
 
         ipcMain.handle('generate-code', ipcValidator.createValidatedHandler('generate-code', async (event, input) => {
+            // Rate limit code generation (AI API calls are expensive)
+            const clientId = event.sender.id.toString();
+            const allowed = await this.codeGenRateLimiter.checkLimit(clientId);
+            if (!allowed) {
+                logger.logSecurityEvent('code_gen_rate_limit_exceeded', { clientId });
+                return { success: false, error: 'Rate limit exceeded. Please wait before generating more code.' };
+            }
             return await this.generateCode(input.prompt);
         }));
 
@@ -737,74 +760,139 @@ class DynamicAppBuilder {
             }
         });
 
-        ipcMain.handle('db-list-tables', async (event, dbName) => {
+        ipcMain.handle('db-list-tables', ipcValidator.createValidatedHandler('db-list-tables', async (event, input) => {
             try {
-                return await this.databaseManager.listTables(dbName);
+                return await this.databaseManager.listTables(input.dbName);
             } catch (error) {
                 logger.error('Failed to list tables', error);
                 return { success: false, error: error.message };
             }
-        });
+        }));
 
-        ipcMain.handle('db-create-table', async (event, { dbName, tableName, schema }) => {
+        ipcMain.handle('db-create-table', ipcValidator.createValidatedHandler('db-create-table', async (event, input) => {
             try {
-                return await this.databaseManager.createTable(dbName, tableName, schema);
+                const clientId = event.sender.id.toString();
+                const allowed = await this.dbWriteRateLimiter.checkLimit(clientId);
+                if (!allowed) {
+                    return { success: false, error: 'Rate limit exceeded for database writes.' };
+                }
+                return await this.databaseManager.createTable(input.dbName, input.tableName, input.schema);
             } catch (error) {
                 logger.error('Failed to create table', error);
                 return { success: false, error: error.message };
             }
-        });
+        }));
 
-        ipcMain.handle('db-insert-data', async (event, { dbName, tableName, data }) => {
+        ipcMain.handle('db-insert-data', ipcValidator.createValidatedHandler('db-insert-data', async (event, input) => {
             try {
-                return await this.databaseManager.insertData(dbName, tableName, data);
+                const clientId = event.sender.id.toString();
+                const allowed = await this.dbWriteRateLimiter.checkLimit(clientId);
+                if (!allowed) {
+                    return { success: false, error: 'Rate limit exceeded for database writes.' };
+                }
+                return await this.databaseManager.insertData(input.dbName, input.tableName, input.data);
             } catch (error) {
                 logger.error('Failed to insert data', error);
                 return { success: false, error: error.message };
             }
-        });
+        }));
 
-        ipcMain.handle('db-query-data', async (event, { dbName, tableName, options }) => {
+        ipcMain.handle('db-query-data', ipcValidator.createValidatedHandler('db-query-data', async (event, input) => {
             try {
-                return await this.databaseManager.queryData(dbName, tableName, options);
+                return await this.databaseManager.queryData(input.dbName, input.tableName, input.options);
             } catch (error) {
                 logger.error('Failed to query data', error);
                 return { success: false, error: error.message };
             }
-        });
+        }));
 
-        ipcMain.handle('db-update-data', async (event, { dbName, tableName, id, data }) => {
+        ipcMain.handle('db-update-data', ipcValidator.createValidatedHandler('db-update-data', async (event, input) => {
             try {
-                return await this.databaseManager.updateData(dbName, tableName, id, data);
+                const clientId = event.sender.id.toString();
+                const allowed = await this.dbWriteRateLimiter.checkLimit(clientId);
+                if (!allowed) {
+                    return { success: false, error: 'Rate limit exceeded for database writes.' };
+                }
+                return await this.databaseManager.updateData(input.dbName, input.tableName, input.id, input.data);
             } catch (error) {
                 logger.error('Failed to update data', error);
                 return { success: false, error: error.message };
             }
-        });
+        }));
 
-        ipcMain.handle('db-delete-data', async (event, { dbName, tableName, id }) => {
+        ipcMain.handle('db-delete-data', ipcValidator.createValidatedHandler('db-delete-data', async (event, input) => {
             try {
-                return await this.databaseManager.deleteData(dbName, tableName, id);
+                const clientId = event.sender.id.toString();
+                const allowed = await this.dbWriteRateLimiter.checkLimit(clientId);
+                if (!allowed) {
+                    return { success: false, error: 'Rate limit exceeded for database writes.' };
+                }
+                return await this.databaseManager.deleteData(input.dbName, input.tableName, input.id);
             } catch (error) {
                 logger.error('Failed to delete data', error);
                 return { success: false, error: error.message };
             }
-        });
+        }));
 
-        ipcMain.handle('db-execute-sql', async (event, { dbName, sql, params }) => {
+        ipcMain.handle('db-execute-sql', ipcValidator.createValidatedHandler('db-execute-sql', async (event, input) => {
             try {
-                return await this.databaseManager.executeSQL(dbName, sql, params);
+                const clientId = event.sender.id.toString();
+                const allowed = await this.dbWriteRateLimiter.checkLimit(clientId);
+                if (!allowed) {
+                    return { success: false, error: 'Rate limit exceeded for database operations.' };
+                }
+                return await this.databaseManager.executeSQL(input.dbName, input.sql, input.params || []);
             } catch (error) {
                 logger.error('Failed to execute SQL', error);
                 return { success: false, error: error.message };
             }
-        });
+        }));
 
-        ipcMain.handle('db-export-database', async (event, dbName) => {
+        ipcMain.handle('db-export-database', ipcValidator.createValidatedHandler('db-export-database', async (event, input) => {
             try {
-                return await this.databaseManager.exportDatabase(dbName);
+                return await this.databaseManager.exportDatabase(input.dbName);
             } catch (error) {
                 logger.error('Failed to export database', error);
+                return { success: false, error: error.message };
+            }
+        }));
+
+        // ============================================================
+        // Database Backup & Restore IPC Handlers
+        // ============================================================
+
+        ipcMain.handle('db-backup-database', async (event, { dbName, password }) => {
+            try {
+                return await this.databaseManager.backupDatabase(dbName, password || null);
+            } catch (error) {
+                logger.error('Failed to backup database', error);
+                return { success: false, error: error.message };
+            }
+        });
+
+        ipcMain.handle('db-restore-database', async (event, { backupPath, targetDbName, password }) => {
+            try {
+                return await this.databaseManager.restoreDatabase(backupPath, targetDbName || null, password || null);
+            } catch (error) {
+                logger.error('Failed to restore database', error);
+                return { success: false, error: error.message };
+            }
+        });
+
+        ipcMain.handle('db-list-backups', async () => {
+            try {
+                return await this.databaseManager.listBackups();
+            } catch (error) {
+                logger.error('Failed to list backups', error);
+                return { success: false, error: error.message };
+            }
+        });
+
+        ipcMain.handle('db-delete-backup', async (event, { backupPath }) => {
+            try {
+                return await this.databaseManager.deleteBackup(backupPath);
+            } catch (error) {
+                logger.error('Failed to delete backup', error);
                 return { success: false, error: error.message };
             }
         });
@@ -813,23 +901,29 @@ class DynamicAppBuilder {
         // Multi-App Registry IPC Handlers
         // ============================================================
 
-        ipcMain.handle('db-register-app', async (event, { appId, appName, description }) => {
+        ipcMain.handle('db-register-app', ipcValidator.createValidatedHandler('db-register-app', async (event, input) => {
             try {
-                return await this.databaseManager.registerApp(appId, appName, description);
+                return await this.databaseManager.registerApp(
+                    input.appId,
+                    input.appName,
+                    input.description,
+                    input.originalPrompt || null,
+                    input.generatedCode || null
+                );
             } catch (error) {
                 logger.error('Failed to register app', error);
                 return { success: false, error: error.message };
             }
-        });
+        }));
 
-        ipcMain.handle('db-get-app-info', async (event, appId) => {
+        ipcMain.handle('db-get-app-info', ipcValidator.createValidatedHandler('db-get-app-info', async (event, input) => {
             try {
-                return await this.databaseManager.getAppInfo(appId);
+                return await this.databaseManager.getAppInfo(input.appId);
             } catch (error) {
                 logger.error('Failed to get app info', error);
                 return { success: false, error: error.message };
             }
-        });
+        }));
 
         ipcMain.handle('db-list-apps', async () => {
             try {
@@ -858,96 +952,320 @@ class DynamicAppBuilder {
             }
         });
 
-        ipcMain.handle('db-get-related-tables', async (event, tableName) => {
+        ipcMain.handle('db-get-related-tables', ipcValidator.createValidatedHandler('db-get-related-tables', async (event, input) => {
             try {
-                return await this.databaseManager.getRelatedTables(tableName);
+                return await this.databaseManager.getRelatedTables(input.tableName);
             } catch (error) {
                 logger.error('Failed to get related tables', error);
                 return { success: false, error: error.message };
             }
-        });
+        }));
 
-        ipcMain.handle('db-create-table-with-owner', async (event, { dbName, tableName, schema, appId, description }) => {
+        ipcMain.handle('db-create-table-with-owner', ipcValidator.createValidatedHandler('db-create-table-with-owner', async (event, input) => {
             try {
-                return await this.databaseManager.createTableWithOwner(dbName, tableName, schema, appId, description);
+                const clientId = event.sender.id.toString();
+                const allowed = await this.dbWriteRateLimiter.checkLimit(clientId);
+                if (!allowed) {
+                    return { success: false, error: 'Rate limit exceeded for database writes.' };
+                }
+                return await this.databaseManager.createTableWithOwner(input.dbName, input.tableName, input.schema, input.appId, input.description);
             } catch (error) {
                 logger.error('Failed to create table with owner', error);
                 return { success: false, error: error.message };
             }
-        });
+        }));
 
-        ipcMain.handle('db-record-relationship', async (event, { sourceTable, targetTable, relationshipType, description }) => {
+        ipcMain.handle('db-record-relationship', ipcValidator.createValidatedHandler('db-record-relationship', async (event, input) => {
             try {
-                return await this.databaseManager.recordTableRelationship(sourceTable, targetTable, relationshipType, description);
+                return await this.databaseManager.recordTableRelationship(input.sourceTable, input.targetTable, input.relationshipType, input.description);
             } catch (error) {
                 logger.error('Failed to record table relationship', error);
                 return { success: false, error: error.message };
             }
-        });
+        }));
 
-        ipcMain.handle('db-drop-table', async (event, { dbName, tableName }) => {
+        ipcMain.handle('db-drop-table', ipcValidator.createValidatedHandler('db-drop-table', async (event, input) => {
             try {
-                return await this.databaseManager.dropTable(dbName, tableName);
+                const clientId = event.sender.id.toString();
+                const allowed = await this.dbWriteRateLimiter.checkLimit(clientId);
+                if (!allowed) {
+                    return { success: false, error: 'Rate limit exceeded for database writes.' };
+                }
+                return await this.databaseManager.dropTable(input.dbName, input.tableName);
             } catch (error) {
                 logger.error('Failed to drop table', error);
                 return { success: false, error: error.message };
             }
+        }));
+
+        // ============================================================
+        // TABLE USAGE TRACKING & DEPENDENCY ANALYSIS
+        // ============================================================
+
+        ipcMain.handle('db-register-table-usage', ipcValidator.createValidatedHandler('db-register-table-usage', async (event, input) => {
+            try {
+                return await this.databaseManager.registerTableUsage(
+                    input.tableName,
+                    input.appId,
+                    input.accessType || 'read',
+                    input.columnsUsed || []
+                );
+            } catch (error) {
+                logger.error('Failed to register table usage', error);
+                return { success: false, error: error.message };
+            }
+        }));
+
+        ipcMain.handle('db-get-table-dependencies', ipcValidator.createValidatedHandler('db-get-table-dependencies', async (event, input) => {
+            try {
+                return await this.databaseManager.getTableDependencies(input.tableName);
+            } catch (error) {
+                logger.error('Failed to get table dependencies', error);
+                return { success: false, error: error.message };
+            }
+        }));
+
+        ipcMain.handle('db-get-app-table-usage', ipcValidator.createValidatedHandler('db-get-app-table-usage', async (event, input) => {
+            try {
+                return await this.databaseManager.getAppTableUsage(input.appId);
+            } catch (error) {
+                logger.error('Failed to get app table usage', error);
+                return { success: false, error: error.message };
+            }
+        }));
+
+        ipcMain.handle('db-analyze-schema-impact', ipcValidator.createValidatedHandler('db-analyze-schema-impact', async (event, input) => {
+            try {
+                return await this.databaseManager.analyzeSchemaChangeImpact(
+                    input.tableName,
+                    input.newSchema,
+                    input.changingAppId
+                );
+            } catch (error) {
+                logger.error('Failed to analyze schema impact', error);
+                return { success: false, error: error.message };
+            }
+        }));
+
+        ipcMain.handle('db-record-schema-change', ipcValidator.createValidatedHandler('db-record-schema-change', async (event, input) => {
+            try {
+                return await this.databaseManager.recordSchemaChange(
+                    input.tableName,
+                    input.changeType,
+                    input.oldSchema,
+                    input.newSchema,
+                    input.changedByApp,
+                    input.affectedApps || []
+                );
+            } catch (error) {
+                logger.error('Failed to record schema change', error);
+                return { success: false, error: error.message };
+            }
+        }));
+
+        ipcMain.handle('db-get-schema-history', ipcValidator.createValidatedHandler('db-get-schema-history', async (event, input) => {
+            try {
+                return await this.databaseManager.getSchemaChangeHistory(input.tableName, input.limit || 50);
+            } catch (error) {
+                logger.error('Failed to get schema history', error);
+                return { success: false, error: error.message };
+            }
+        }));
+
+        ipcMain.handle('db-get-dependency-map', async () => {
+            try {
+                return await this.databaseManager.getDependencyMap();
+            } catch (error) {
+                logger.error('Failed to get dependency map', error);
+                return { success: false, error: error.message };
+            }
         });
 
+        // ============================================================
+        // APP DEPRECATION & REGENERATION
+        // ============================================================
+
+        ipcMain.handle('db-deprecate-app', ipcValidator.createValidatedHandler('db-deprecate-app', async (event, input) => {
+            try {
+                return await this.databaseManager.deprecateApp(input.appId, input.reason);
+            } catch (error) {
+                logger.error('Failed to deprecate app', error);
+                return { success: false, error: error.message };
+            }
+        }));
+
+        ipcMain.handle('db-get-app-registry', async () => {
+            try {
+                return await this.databaseManager.getAppRegistry();
+            } catch (error) {
+                logger.error('Failed to get app registry', error);
+                return { success: false, error: error.message };
+            }
+        });
+
+        ipcMain.handle('db-get-deprecated-apps', async () => {
+            try {
+                return await this.databaseManager.getDeprecatedApps();
+            } catch (error) {
+                logger.error('Failed to get deprecated apps', error);
+                return { success: false, error: error.message };
+            }
+        });
+
+        ipcMain.handle('db-get-regeneratable-apps', async () => {
+            try {
+                return await this.databaseManager.getRegeneratableApps();
+            } catch (error) {
+                logger.error('Failed to get regeneratable apps', error);
+                return { success: false, error: error.message };
+            }
+        });
+
+        ipcMain.handle('db-update-app-code', ipcValidator.createValidatedHandler('db-update-app-code', async (event, input) => {
+            try {
+                return await this.databaseManager.updateAppCode(input.appId, input.newCode, input.markActive !== false);
+            } catch (error) {
+                logger.error('Failed to update app code', error);
+                return { success: false, error: error.message };
+            }
+        }));
+
+        ipcMain.handle('db-deprecate-affected-apps', ipcValidator.createValidatedHandler('db-deprecate-affected-apps', async (event, input) => {
+            try {
+                return await this.databaseManager.deprecateAffectedApps(input.tableName, input.impact);
+            } catch (error) {
+                logger.error('Failed to deprecate affected apps', error);
+                return { success: false, error: error.message };
+            }
+        }));
+
+        ipcMain.handle('db-regenerate-app', ipcValidator.createValidatedHandler('db-regenerate-app', async (event, input) => {
+            try {
+                // Get the app's original prompt
+                const appInfo = await this.databaseManager.getAppInfo(input.appId);
+                if (!appInfo.success || !appInfo.app) {
+                    return { success: false, error: 'App not found' };
+                }
+
+                const originalPrompt = appInfo.app.original_prompt;
+                if (!originalPrompt) {
+                    return { success: false, error: 'App has no original prompt stored - cannot regenerate' };
+                }
+
+                // Check if code generation is available
+                if (!this.codeGenerationModule) {
+                    return { success: false, error: 'Code generation not available. Please set API key first.' };
+                }
+
+                // Rate limit check
+                const clientId = event.sender.id.toString();
+                const allowed = await this.codeGenRateLimiter.checkLimit(clientId);
+                if (!allowed) {
+                    return { success: false, error: 'Rate limit exceeded. Please wait before regenerating.' };
+                }
+
+                // Get current schema context
+                const schemaContext = await this.databaseManager.buildSchemaContext();
+
+                // Regenerate with updated schema context
+                const regenerationPrompt = `${originalPrompt}\n\n[REGENERATION NOTE: This app is being regenerated due to database schema changes. Use the current schema context below.]\n\n${schemaContext.context || ''}`;
+
+                const result = await this.codeGenerationModule.generateCode(regenerationPrompt);
+
+                if (!result.success) {
+                    return { success: false, error: result.error || 'Code generation failed' };
+                }
+
+                // Update the app with new code
+                const updateResult = await this.databaseManager.updateAppCode(input.appId, result.code, true);
+
+                if (!updateResult.success) {
+                    return { success: false, error: updateResult.error };
+                }
+
+                logger.info('App regenerated successfully', { appId: input.appId, version: updateResult.app.version });
+
+                return {
+                    success: true,
+                    app: updateResult.app,
+                    code: result.code,
+                    description: result.description
+                };
+            } catch (error) {
+                logger.error('Failed to regenerate app', error);
+                return { success: false, error: error.message };
+            }
+        }));
+
         // AI Schema Generation IPC Handlers
-        ipcMain.handle('db-generate-schema', async (event, description) => {
+        ipcMain.handle('db-generate-schema', ipcValidator.createValidatedHandler('db-generate-schema', async (event, input) => {
             try {
                 if (!this.aiSchemaGenerator) {
                     return { success: false, error: 'AI schema generator not available. Please set API key first.' };
                 }
-                return await this.aiSchemaGenerator.generateSchema(description);
+                const clientId = event.sender.id.toString();
+                const allowed = await this.codeGenRateLimiter.checkLimit(clientId);
+                if (!allowed) {
+                    return { success: false, error: 'Rate limit exceeded. Please wait before generating more schemas.' };
+                }
+                return await this.aiSchemaGenerator.generateSchema(input.description);
             } catch (error) {
                 logger.error('Failed to generate schema', error);
                 return { success: false, error: error.message };
             }
-        });
+        }));
 
-        ipcMain.handle('db-generate-database-script', async (event, description) => {
+        ipcMain.handle('db-generate-database-script', ipcValidator.createValidatedHandler('db-generate-database-script', async (event, input) => {
             try {
                 if (!this.aiSchemaGenerator) {
                     return { success: false, error: 'AI schema generator not available. Please set API key first.' };
                 }
-                return await this.aiSchemaGenerator.generateDatabaseScript(description);
+                const clientId = event.sender.id.toString();
+                const allowed = await this.codeGenRateLimiter.checkLimit(clientId);
+                if (!allowed) {
+                    return { success: false, error: 'Rate limit exceeded. Please wait before generating more scripts.' };
+                }
+                return await this.aiSchemaGenerator.generateDatabaseScript(input.description);
             } catch (error) {
                 logger.error('Failed to generate database script', error);
                 return { success: false, error: error.message };
             }
-        });
+        }));
 
-        ipcMain.handle('db-suggest-improvements', async (event, { schema, context }) => {
+        ipcMain.handle('db-suggest-improvements', ipcValidator.createValidatedHandler('db-suggest-improvements', async (event, input) => {
             try {
                 if (!this.aiSchemaGenerator) {
                     return { success: false, error: 'AI schema generator not available. Please set API key first.' };
                 }
-                return await this.aiSchemaGenerator.suggestImprovements(schema, context);
+                return await this.aiSchemaGenerator.suggestImprovements(input.schema, input.context);
             } catch (error) {
                 logger.error('Failed to suggest improvements', error);
                 return { success: false, error: error.message };
             }
-        });
+        }));
 
         // Database-driven Code Generation
-        ipcMain.handle('db-generate-code-with-data', async (event, { prompt, dbName, includeData }) => {
+        ipcMain.handle('db-generate-code-with-data', ipcValidator.createValidatedHandler('db-generate-code-with-data', async (event, input) => {
             try {
                 if (!this.anthropic) {
                     return { success: false, error: 'Anthropic API key not configured' };
                 }
+                const clientId = event.sender.id.toString();
+                const allowed = await this.codeGenRateLimiter.checkLimit(clientId);
+                if (!allowed) {
+                    return { success: false, error: 'Rate limit exceeded. Please wait before generating more code.' };
+                }
 
-                let enhancedPrompt = prompt;
-                
-                if (includeData && dbName) {
+                let enhancedPrompt = input.prompt;
+
+                if (input.includeData && input.dbName) {
                     // Get database structure and sample data
-                    const tablesResult = await this.databaseManager.listTables(dbName);
-                    const dbContext = await this.buildDatabaseContext(dbName, tablesResult.tables);
-                    
-                    enhancedPrompt = `${prompt}
+                    const tablesResult = await this.databaseManager.listTables(input.dbName);
+                    const dbContext = await this.buildDatabaseContext(input.dbName, tablesResult.tables);
 
-AVAILABLE DATABASE: ${dbName}
+                    enhancedPrompt = `${input.prompt}
+
+AVAILABLE DATABASE: ${input.dbName}
 ${dbContext}
 
 Please generate code that can interact with this database structure. Use the provided table schemas and sample data as context.`;
@@ -958,7 +1276,7 @@ Please generate code that can interact with this database structure. Use the pro
                 logger.error('Failed to generate code with database context', error);
                 return { success: false, error: error.message };
             }
-        });
+        }));
         
         // Secure session ID generation
         ipcMain.handle('generate-session-id', async () => {
@@ -1025,6 +1343,66 @@ Please generate code that can interact with this database structure. Use the pro
                 return { success: false, error: error.message };
             }
         });
+
+        // ============================================================
+        // App Password Protection (Optional)
+        // ============================================================
+
+        ipcMain.handle('check-app-password-status', async () => {
+            try {
+                const hasPassword = await secureStorage.hasAppPassword();
+                return { success: true, hasPassword };
+            } catch (error) {
+                logger.error('Failed to check password status', error);
+                return { success: false, error: error.message };
+            }
+        });
+
+        ipcMain.handle('set-app-password', ipcValidator.createValidatedHandler('set-app-password', async (event, input) => {
+            try {
+                await secureStorage.setAppPassword(input.password);
+                return { success: true, message: 'Password set successfully' };
+            } catch (error) {
+                logger.error('Failed to set app password', error);
+                return { success: false, error: error.message };
+            }
+        }));
+
+        ipcMain.handle('verify-app-password', ipcValidator.createValidatedHandler('verify-app-password', async (event, input) => {
+            try {
+                const clientId = event.sender.id.toString();
+                const allowed = await this.passwordAttemptLimiter.checkLimit(clientId);
+                if (!allowed) {
+                    logger.logSecurityEvent('password_rate_limit_exceeded', { clientId });
+                    return { success: false, error: 'Too many password attempts. Please wait 5 minutes.' };
+                }
+                const isValid = await secureStorage.verifyAppPassword(input.password);
+                return { success: true, valid: isValid };
+            } catch (error) {
+                logger.error('Failed to verify app password', error);
+                return { success: false, error: error.message };
+            }
+        }));
+
+        ipcMain.handle('change-app-password', ipcValidator.createValidatedHandler('change-app-password', async (event, input) => {
+            try {
+                await secureStorage.changeAppPassword(input.currentPassword, input.newPassword);
+                return { success: true, message: 'Password changed successfully' };
+            } catch (error) {
+                logger.error('Failed to change app password', error);
+                return { success: false, error: error.message };
+            }
+        }));
+
+        ipcMain.handle('remove-app-password', ipcValidator.createValidatedHandler('remove-app-password', async (event, input) => {
+            try {
+                await secureStorage.removeAppPassword(input.currentPassword);
+                return { success: true, message: 'Password removed successfully' };
+            } catch (error) {
+                logger.error('Failed to remove app password', error);
+                return { success: false, error: error.message };
+            }
+        }));
     }
 
     /**

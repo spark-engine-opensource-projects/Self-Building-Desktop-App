@@ -48,6 +48,7 @@ function transformSchema(schema) {
 contextBridge.exposeInMainWorld('electronAPI', {
     // Core functionality
     setApiKey: (apiKey) => ipcRenderer.invoke('set-api-key', apiKey),
+    checkApiStatus: () => ipcRenderer.invoke('check-api-status'),
     generateCode: (prompt) => ipcRenderer.invoke('generate-code', prompt),
     executeCode: (data) => ipcRenderer.invoke('execute-code', data),
     executeDOMCode: (data) => ipcRenderer.invoke('execute-dom-code', data),
@@ -61,6 +62,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Configuration management
     getConfig: () => ipcRenderer.invoke('get-config'),
     updateConfig: (config) => ipcRenderer.invoke('update-config', config),
+
+    // CSRF Token for secure API calls
+    getCsrfToken: () => ipcRenderer.invoke('get-csrf-token'),
     
     // Security
     scanCodeSecurity: (code) => ipcRenderer.invoke('scan-code-security', code),
@@ -88,6 +92,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     dbDeleteData: (dbName, tableName, id) => ipcRenderer.invoke('db-delete-data', { dbName, tableName, id }),
     dbExecuteSQL: (dbName, sql, params) => ipcRenderer.invoke('db-execute-sql', { dbName, sql, params }),
     dbExportDatabase: (dbName) => ipcRenderer.invoke('db-export-database', dbName),
+
+    // Database Backup & Restore
+    dbBackupDatabase: (dbName, password) => ipcRenderer.invoke('db-backup-database', { dbName, password }),
+    dbRestoreDatabase: (backupPath, targetDbName, password) => ipcRenderer.invoke('db-restore-database', { backupPath, targetDbName, password }),
+    dbListBackups: () => ipcRenderer.invoke('db-list-backups'),
+    dbDeleteBackup: (backupPath) => ipcRenderer.invoke('db-delete-backup', { backupPath }),
 
     // ============================================================
     // SIMPLIFIED DATABASE API (for AI-generated code)
@@ -246,10 +256,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
      * @param {string} appId - Unique identifier for the app
      * @param {string} appName - Display name for the app
      * @param {string} description - Description of what the app does
+     * @param {string} originalPrompt - The original prompt used to generate the app (for regeneration)
+     * @param {string} generatedCode - The generated code for the app
      * @returns {Promise<{success: boolean, app?: Object, error?: string}>}
      */
-    registerApp: (appId, appName, description) => {
-        return ipcRenderer.invoke('db-register-app', { appId, appName, description });
+    registerApp: (appId, appName, description, originalPrompt = null, generatedCode = null) => {
+        return ipcRenderer.invoke('db-register-app', { appId, appName, description, originalPrompt, generatedCode });
     },
 
     /**
@@ -330,7 +342,164 @@ contextBridge.exposeInMainWorld('electronAPI', {
             description
         });
     },
-    
+
+    // ============================================================
+    // TABLE USAGE TRACKING & DEPENDENCY ANALYSIS
+    // For detecting when schema changes affect other apps
+    // ============================================================
+
+    /**
+     * Register that an app uses a table
+     * @param {string} tableName - The table being used
+     * @param {string} appId - The app using the table
+     * @param {string} accessType - Type of access: 'read', 'write', or 'both'
+     * @param {Array<string>} columnsUsed - Which columns the app uses
+     * @returns {Promise<{success: boolean, error?: string}>}
+     */
+    registerTableUsage: (tableName, appId, accessType = 'read', columnsUsed = []) => {
+        return ipcRenderer.invoke('db-register-table-usage', {
+            tableName,
+            appId,
+            accessType,
+            columnsUsed
+        });
+    },
+
+    /**
+     * Get all apps that use a specific table
+     * @param {string} tableName - The table to check
+     * @returns {Promise<{success: boolean, apps?: Array, error?: string}>}
+     */
+    getTableDependencies: (tableName) => {
+        return ipcRenderer.invoke('db-get-table-dependencies', { tableName });
+    },
+
+    /**
+     * Get all tables used by a specific app
+     * @param {string} appId - The app to check
+     * @returns {Promise<{success: boolean, tables?: Array, error?: string}>}
+     */
+    getAppTableUsage: (appId) => {
+        return ipcRenderer.invoke('db-get-app-table-usage', { appId });
+    },
+
+    /**
+     * Analyze the impact of a schema change on other apps
+     * @param {string} tableName - The table being modified
+     * @param {Object} newSchema - The proposed new schema
+     * @param {string} changingAppId - The app making the change
+     * @returns {Promise<{success: boolean, impact?: Object, error?: string}>}
+     */
+    analyzeSchemaImpact: (tableName, newSchema, changingAppId) => {
+        return ipcRenderer.invoke('db-analyze-schema-impact', {
+            tableName,
+            newSchema,
+            changingAppId
+        });
+    },
+
+    /**
+     * Record a schema change in the history
+     * @param {string} tableName - The table that was modified
+     * @param {string} changeType - Type of change (create, alter, drop)
+     * @param {Object} oldSchema - Previous schema
+     * @param {Object} newSchema - New schema
+     * @param {string} changedByApp - App that made the change
+     * @param {Array<string>} affectedApps - Apps affected by this change
+     */
+    recordSchemaChange: (tableName, changeType, oldSchema, newSchema, changedByApp, affectedApps = []) => {
+        return ipcRenderer.invoke('db-record-schema-change', {
+            tableName,
+            changeType,
+            oldSchema,
+            newSchema,
+            changedByApp,
+            affectedApps
+        });
+    },
+
+    /**
+     * Get schema change history for a table
+     * @param {string} tableName - The table to get history for (optional, gets all if null)
+     * @param {number} limit - Maximum number of records to return
+     */
+    getSchemaHistory: (tableName = null, limit = 50) => {
+        return ipcRenderer.invoke('db-get-schema-history', { tableName, limit });
+    },
+
+    /**
+     * Get a comprehensive dependency map for all tables
+     * Shows which apps own and use each table
+     */
+    getDependencyMap: () => {
+        return ipcRenderer.invoke('db-get-dependency-map');
+    },
+
+    // ============================================================
+    // APP DEPRECATION & REGENERATION
+    // ============================================================
+
+    /**
+     * Mark an app as deprecated
+     * @param {string} appId - The app to deprecate
+     * @param {string} reason - Why the app was deprecated
+     */
+    deprecateApp: (appId, reason) => {
+        return ipcRenderer.invoke('db-deprecate-app', { appId, reason });
+    },
+
+    /**
+     * Get all registered apps
+     * @returns {Promise<{success: boolean, apps?: Array}>}
+     */
+    getAppRegistry: () => {
+        return ipcRenderer.invoke('db-get-app-registry');
+    },
+
+    /**
+     * Get all deprecated apps
+     * @returns {Promise<{success: boolean, apps?: Array}>}
+     */
+    getDeprecatedApps: () => {
+        return ipcRenderer.invoke('db-get-deprecated-apps');
+    },
+
+    /**
+     * Get apps that can be regenerated (have original prompt)
+     * @returns {Promise<{success: boolean, apps?: Array}>}
+     */
+    getRegeneratableApps: () => {
+        return ipcRenderer.invoke('db-get-regeneratable-apps');
+    },
+
+    /**
+     * Update an app's code after regeneration
+     * @param {string} appId - The app to update
+     * @param {string} newCode - The new code
+     * @param {boolean} markActive - Whether to mark as active
+     */
+    updateAppCode: (appId, newCode, markActive = true) => {
+        return ipcRenderer.invoke('db-update-app-code', { appId, newCode, markActive });
+    },
+
+    /**
+     * Deprecate all apps affected by a schema change
+     * @param {string} tableName - The table that was changed
+     * @param {Object} impact - The impact analysis result
+     */
+    deprecateAffectedApps: (tableName, impact) => {
+        return ipcRenderer.invoke('db-deprecate-affected-apps', { tableName, impact });
+    },
+
+    /**
+     * Regenerate an app using its original prompt and current schema
+     * @param {string} appId - The app to regenerate
+     * @returns {Promise<{success: boolean, app?: Object, code?: string, error?: string}>}
+     */
+    regenerateApp: (appId) => {
+        return ipcRenderer.invoke('db-regenerate-app', { appId });
+    },
+
     // Database-driven Code Generation
     dbGenerateCodeWithData: (prompt, dbName, includeData) => ipcRenderer.invoke('db-generate-code-with-data', { prompt, dbName, includeData }),
     
@@ -341,5 +510,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getPerformanceDashboard: () => ipcRenderer.invoke('get-performance-dashboard'),
     acknowledgeAlert: (alertId) => ipcRenderer.invoke('acknowledge-alert', alertId),
     exportPerformanceData: (format) => ipcRenderer.invoke('export-performance-data', format),
-    openPerformanceDashboard: () => ipcRenderer.invoke('open-performance-dashboard')
+    openPerformanceDashboard: () => ipcRenderer.invoke('open-performance-dashboard'),
+
+    // App Password Protection (Optional)
+    checkAppPasswordStatus: () => ipcRenderer.invoke('check-app-password-status'),
+    setAppPassword: (password) => ipcRenderer.invoke('set-app-password', { password }),
+    verifyAppPassword: (password) => ipcRenderer.invoke('verify-app-password', { password }),
+    changeAppPassword: (currentPassword, newPassword) => ipcRenderer.invoke('change-app-password', { currentPassword, newPassword }),
+    removeAppPassword: (currentPassword) => ipcRenderer.invoke('remove-app-password', { currentPassword })
 });

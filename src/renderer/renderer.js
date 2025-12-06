@@ -17,6 +17,9 @@ class DynamicAppRenderer {
         this.dataChangeBroadcaster = null;
         this.multiAppMode = false;
 
+        // Security manager for password protection and session timeout
+        this.securityManager = null;
+
         // Performance optimization
         if (window.UIPerformanceMonitor) {
             this.performanceMonitor = window.UIPerformanceMonitor;
@@ -29,6 +32,8 @@ class DynamicAppRenderer {
         this.initializeSecureExecution();
         this.initializeTheme();
         this.initializeMultiAppRuntime();
+        this.initializeSecurity();
+        this.initializeApiKey();
     }
 
     initializeSecureExecution() {
@@ -141,6 +146,26 @@ class DynamicAppRenderer {
         this.clearAllAppsBtn = document.getElementById('clearAllAppsBtn');
         this.runningAppsCount = document.getElementById('runningAppsCount');
         this.sharedDbName = document.getElementById('sharedDbName');
+
+        // App Registry elements
+        this.appRegistrySection = document.getElementById('appRegistrySection');
+        this.toggleAppRegistryBtn = document.getElementById('toggleAppRegistryBtn');
+        this.refreshAppRegistryBtn = document.getElementById('refreshAppRegistryBtn');
+        this.showDependencyMapBtn = document.getElementById('showDependencyMapBtn');
+        this.deprecatedAppsAlert = document.getElementById('deprecatedAppsAlert');
+        this.deprecatedAlertMessage = document.getElementById('deprecatedAlertMessage');
+        this.viewDeprecatedBtn = document.getElementById('viewDeprecatedBtn');
+        this.deprecatedCount = document.getElementById('deprecatedCount');
+        this.appsGrid = document.getElementById('appsGrid');
+        this.deprecatedAppsList = document.getElementById('deprecatedAppsList');
+        this.schemaHistoryList = document.getElementById('schemaHistoryList');
+        this.regenerateAllBtn = document.getElementById('regenerateAllBtn');
+        this.dependencyMapModal = document.getElementById('dependencyMapModal');
+        this.closeDependencyMapBtn = document.getElementById('closeDependencyMapBtn');
+        this.dependencyMapContent = document.getElementById('dependencyMapContent');
+        this.regenerationModal = document.getElementById('regenerationModal');
+        this.regenerationStatus = document.getElementById('regenerationStatus');
+        this.regenerationProgress = document.getElementById('regenerationProgress');
     }
 
     setupEventListeners() {
@@ -152,9 +177,12 @@ class DynamicAppRenderer {
         this.newSessionBtn.addEventListener('click', () => this.handleNewSession());
         this.themeToggle.addEventListener('click', () => this.toggleTheme());
 
-        // Template buttons
-        document.querySelectorAll('.template-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => this.loadTemplate(e.target.dataset.template));
+        // Template buttons (both old style and new cards)
+        document.querySelectorAll('.template-btn, .template-card').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const template = e.currentTarget.dataset.template;
+                if (template) this.loadTemplate(template);
+            });
         });
 
         // Enter key support for API key input
@@ -260,6 +288,111 @@ class DynamicAppRenderer {
                 this.setMultiAppLayout(layout);
             });
         });
+
+        // Code toggle button (show/hide generated code)
+        const toggleCodeBtn = document.getElementById('toggleCodeBtn');
+        if (toggleCodeBtn) {
+            toggleCodeBtn.addEventListener('click', () => this.toggleCodeVisibility());
+        }
+
+        // Copy code button
+        const copyCodeBtn = document.getElementById('copyCodeBtn');
+        if (copyCodeBtn) {
+            copyCodeBtn.addEventListener('click', () => this.copyCodeToClipboard());
+        }
+
+        // App Registry event listeners
+        if (this.toggleAppRegistryBtn) {
+            this.toggleAppRegistryBtn.addEventListener('click', () => this.toggleAppRegistrySection());
+        }
+        if (this.refreshAppRegistryBtn) {
+            this.refreshAppRegistryBtn.addEventListener('click', () => this.loadAppRegistry());
+        }
+        if (this.showDependencyMapBtn) {
+            this.showDependencyMapBtn.addEventListener('click', () => this.showDependencyMap());
+        }
+        if (this.viewDeprecatedBtn) {
+            this.viewDeprecatedBtn.addEventListener('click', () => this.switchRegistryTab('deprecated-apps'));
+        }
+        if (this.closeDependencyMapBtn) {
+            this.closeDependencyMapBtn.addEventListener('click', () => this.closeDependencyMap());
+        }
+        if (this.regenerateAllBtn) {
+            this.regenerateAllBtn.addEventListener('click', () => this.regenerateAllDeprecatedApps());
+        }
+
+        // Registry tab switching
+        document.querySelectorAll('.registry-tab').forEach(tab => {
+            tab.addEventListener('click', (e) => {
+                const tabName = e.currentTarget.dataset.tab;
+                if (tabName) this.switchRegistryTab(tabName);
+            });
+        });
+    }
+
+    /**
+     * Toggle code visibility (show/hide generated code)
+     */
+    toggleCodeVisibility() {
+        const codeContainer = document.getElementById('codeContainer');
+        const toggleBtn = document.getElementById('toggleCodeBtn');
+        const toggleText = toggleBtn?.querySelector('.toggle-text');
+
+        if (!codeContainer || !toggleBtn) return;
+
+        const isVisible = codeContainer.style.display !== 'none';
+
+        if (isVisible) {
+            codeContainer.style.display = 'none';
+            toggleBtn.classList.remove('expanded');
+            if (toggleText) toggleText.textContent = 'Show Code';
+        } else {
+            codeContainer.style.display = 'block';
+            toggleBtn.classList.add('expanded');
+            if (toggleText) toggleText.textContent = 'Hide Code';
+        }
+    }
+
+    /**
+     * Copy generated code to clipboard
+     */
+    async copyCodeToClipboard() {
+        const codeEl = document.getElementById('generatedCode');
+        const copyBtn = document.getElementById('copyCodeBtn');
+
+        if (!codeEl || !this.currentCode) {
+            this.showNotification('No code to copy', 'error');
+            return;
+        }
+
+        try {
+            await navigator.clipboard.writeText(this.currentCode);
+
+            // Visual feedback
+            const originalText = copyBtn.textContent;
+            copyBtn.textContent = '✓ Copied!';
+            copyBtn.classList.add('btn-success');
+
+            setTimeout(() => {
+                copyBtn.textContent = originalText;
+                copyBtn.classList.remove('btn-success');
+            }, 2000);
+
+            this.showNotification('Code copied to clipboard', 'success');
+        } catch (error) {
+            this.showNotification('Failed to copy code', 'error');
+        }
+    }
+
+    /**
+     * Update the code lines count display
+     */
+    updateCodeLinesCount(code) {
+        const countEl = document.getElementById('codeLinesCount');
+        if (countEl && code) {
+            const lines = code.split('\n').length;
+            countEl.textContent = `${lines} lines`;
+        }
     }
 
     updateUI() {
@@ -307,6 +440,11 @@ class DynamicAppRenderer {
                 this.updateUI();
                 this.handleNewSession();
                 this.showNotification('API key configured successfully!', 'success');
+
+                // Notify SecurityManager that API key is set (triggers password prompt)
+                if (this.securityManager && typeof this.securityManager.onApiKeySet === 'function') {
+                    this.securityManager.onApiKeySet();
+                }
             } else {
                 this.showNotification(`Failed to configure API key: ${result.error}`, 'error');
             }
@@ -358,7 +496,18 @@ class DynamicAppRenderer {
                 this.codeDescription.textContent = description || 'No description provided';
                 this.codePackages.textContent = packages.length > 0 ? packages.join(', ') : 'None';
                 this.generatedCode.textContent = code;
-                
+
+                // Update line count and reset code visibility
+                this.updateCodeLinesCount(code);
+                const codeContainer = document.getElementById('codeContainer');
+                const toggleBtn = document.getElementById('toggleCodeBtn');
+                if (codeContainer) codeContainer.style.display = 'none';
+                if (toggleBtn) {
+                    toggleBtn.classList.remove('expanded');
+                    const toggleText = toggleBtn.querySelector('.toggle-text');
+                    if (toggleText) toggleText.textContent = 'Show Code';
+                }
+
                 // Show metadata if available
                 if (result.metadata) {
                     this.showGenerationMetadata(result.metadata);
@@ -746,10 +895,12 @@ class DynamicAppRenderer {
             // For DOM code, launch in multi-app mode if AppManager is available
             if (isDOMCode && this.appManager) {
                 const appName = this.codeDescription?.textContent || 'Generated App';
+                const originalPrompt = this.promptInput.value;
                 const panel = await this.executeInMultiAppMode(
                     this.currentCode,
                     appName,
-                    this.promptInput.value.substring(0, 100)
+                    originalPrompt.substring(0, 100),
+                    originalPrompt  // Pass full original prompt for regeneration
                 );
 
                 if (panel) {
@@ -2290,6 +2441,52 @@ ${columns.map(col => `    { name: '${col.name}', type: '${col.type}'${col.requir
     }
 
     /**
+     * Initialize security manager for password protection and session timeout
+     */
+    initializeSecurity() {
+        try {
+            if (typeof SecurityManager !== 'undefined') {
+                this.securityManager = new SecurityManager();
+                this.securityManager.initialize();
+
+                // Set up lock/unlock callbacks
+                this.securityManager.onLock(() => {
+                    window.rendererLogger.debug('App locked');
+                });
+
+                this.securityManager.onUnlock(() => {
+                    window.rendererLogger.debug('App unlocked');
+                });
+
+                window.rendererLogger.debug('SecurityManager initialized');
+            } else {
+                window.rendererLogger.warn('SecurityManager not available');
+            }
+        } catch (error) {
+            window.rendererLogger.error('Failed to initialize SecurityManager:', error);
+        }
+    }
+
+    /**
+     * Initialize API key from secure storage
+     * Checks if an API key is already stored and restores the session
+     */
+    async initializeApiKey() {
+        try {
+            const status = await window.electronAPI.checkApiStatus();
+            if (status.success && status.configured) {
+                this.isApiConfigured = true;
+                this.updateUI();
+                this.handleNewSession();
+                window.rendererLogger.debug('API key restored from secure storage');
+                this.showNotification('API key restored from previous session', 'success');
+            }
+        } catch (error) {
+            window.rendererLogger.error('Failed to check API status:', error);
+        }
+    }
+
+    /**
      * Initialize multi-app runtime components
      */
     initializeMultiAppRuntime() {
@@ -2440,7 +2637,7 @@ ${columns.map(col => `    { name: '${col.name}', type: '${col.type}'${col.requir
     /**
      * Create a new app panel from generated code
      */
-    async createAppPanel(appName, description, code) {
+    async createAppPanel(appName, description, code, originalPrompt = null) {
         if (!this.appManager) {
             window.rendererLogger.warn('AppManager not initialized');
             return null;
@@ -2463,9 +2660,9 @@ ${columns.map(col => `    { name: '${col.name}', type: '${col.type}'${col.requir
             // Execute code in panel
             await panel.execute(code);
 
-            // Register app in database
+            // Register app in database with original prompt and code for regeneration
             try {
-                await window.electronAPI.registerApp(appId, appName, description);
+                await window.electronAPI.registerApp(appId, appName, description, originalPrompt, code);
             } catch (regError) {
                 window.rendererLogger.warn('Failed to register app:', regError);
             }
@@ -2481,12 +2678,469 @@ ${columns.map(col => `    { name: '${col.name}', type: '${col.type}'${col.requir
     /**
      * Execute code in multi-app mode (creates a new panel)
      */
-    async executeInMultiAppMode(code, appName, description) {
-        const panel = await this.createAppPanel(appName, description, code);
+    async executeInMultiAppMode(code, appName, description, originalPrompt = null) {
+        const panel = await this.createAppPanel(appName, description, code, originalPrompt);
         if (panel) {
             this.showNotification(`App "${appName}" launched!`, 'success');
         }
         return panel;
+    }
+
+    // ============================================================
+    // APP REGISTRY METHODS
+    // ============================================================
+
+    /**
+     * Toggle App Registry section visibility
+     */
+    toggleAppRegistrySection() {
+        const isVisible = this.appRegistrySection.style.display !== 'none';
+
+        if (isVisible) {
+            this.appRegistrySection.style.display = 'none';
+        } else {
+            this.appRegistrySection.style.display = 'block';
+            this.loadAppRegistry();
+        }
+    }
+
+    /**
+     * Load all app registry data
+     */
+    async loadAppRegistry() {
+        try {
+            // Load all apps
+            const registryResult = await window.electronAPI.getAppRegistry();
+            if (registryResult.success) {
+                this.renderAppsGrid(registryResult.apps || []);
+            }
+
+            // Load deprecated apps
+            const deprecatedResult = await window.electronAPI.getDeprecatedApps();
+            if (deprecatedResult.success) {
+                const deprecatedApps = deprecatedResult.apps || [];
+                this.renderDeprecatedApps(deprecatedApps);
+                this.updateDeprecatedCount(deprecatedApps.length);
+
+                // Show alert if there are deprecated apps
+                if (deprecatedApps.length > 0) {
+                    this.deprecatedAppsAlert.style.display = 'flex';
+                    this.deprecatedAlertMessage.textContent =
+                        `${deprecatedApps.length} app(s) were affected by schema changes and need regeneration.`;
+                } else {
+                    this.deprecatedAppsAlert.style.display = 'none';
+                }
+            }
+
+            // Load schema history
+            const historyResult = await window.electronAPI.getSchemaHistory(null, 20);
+            if (historyResult.success) {
+                this.renderSchemaHistory(historyResult.history || []);
+            }
+        } catch (error) {
+            window.rendererLogger.error('Failed to load app registry:', error);
+            this.showNotification('Failed to load app registry', 'error');
+        }
+    }
+
+    /**
+     * Render apps grid
+     */
+    renderAppsGrid(apps) {
+        if (!apps || apps.length === 0) {
+            this.appsGrid.innerHTML = '<p class="no-data">No registered apps yet. Generate some apps to see them here!</p>';
+            return;
+        }
+
+        this.appsGrid.innerHTML = '';
+
+        for (const app of apps) {
+            const card = document.createElement('div');
+            card.className = `app-card ${app.status === 'deprecated' ? 'deprecated' : ''}`;
+
+            const statusClass = app.status === 'active' ? 'active' : 'deprecated';
+            const createdDate = app.created_at ? new Date(app.created_at).toLocaleDateString() : 'Unknown';
+
+            card.innerHTML = `
+                <div class="app-card-header">
+                    <span class="app-card-title">${this.escapeHtml(app.app_name || app.app_id)}</span>
+                    <span class="app-card-status ${statusClass}">${app.status || 'active'}</span>
+                </div>
+                <p class="app-card-description">${this.escapeHtml(app.description || 'No description')}</p>
+                <div class="app-card-meta">
+                    <span class="app-card-meta-item">📅 ${createdDate}</span>
+                    ${app.version ? `<span class="app-card-meta-item">v${app.version}</span>` : ''}
+                </div>
+                <div class="app-card-actions">
+                    ${app.status === 'deprecated' && app.original_prompt ?
+                        `<button class="btn btn-primary btn-sm" onclick="window.app.regenerateApp('${app.app_id}')">🔄 Regenerate</button>` :
+                        ''}
+                    <button class="btn btn-outline btn-sm" onclick="window.app.showAppDetails('${app.app_id}')">📋 Details</button>
+                </div>
+            `;
+
+            this.appsGrid.appendChild(card);
+        }
+    }
+
+    /**
+     * Render deprecated apps list
+     */
+    renderDeprecatedApps(apps) {
+        if (!apps || apps.length === 0) {
+            this.deprecatedAppsList.innerHTML = '<p class="no-data">No deprecated apps! All your apps are up to date.</p>';
+            this.regenerateAllBtn.disabled = true;
+            return;
+        }
+
+        this.regenerateAllBtn.disabled = false;
+        this.deprecatedAppsList.innerHTML = '';
+
+        for (const app of apps) {
+            const item = document.createElement('div');
+            item.className = 'deprecated-app-item';
+            item.dataset.appId = app.app_id;
+
+            const canRegenerate = !!app.original_prompt;
+
+            item.innerHTML = `
+                <div class="deprecated-app-header">
+                    <div class="deprecated-app-info">
+                        <h4>${this.escapeHtml(app.app_name || app.app_id)}</h4>
+                        <p>${this.escapeHtml(app.description || 'No description')}</p>
+                    </div>
+                </div>
+                ${app.deprecation_reason ? `
+                    <div class="deprecation-reason">
+                        <strong>Reason:</strong>
+                        ${this.escapeHtml(app.deprecation_reason)}
+                    </div>
+                ` : ''}
+                <div class="deprecated-app-actions">
+                    ${canRegenerate ? `
+                        <button class="btn btn-primary" onclick="window.app.regenerateApp('${app.app_id}')">
+                            🔄 Regenerate
+                        </button>
+                    ` : `
+                        <button class="btn btn-outline" disabled title="No original prompt stored">
+                            Cannot Regenerate
+                        </button>
+                    `}
+                    <button class="btn btn-outline" onclick="window.app.showAppDetails('${app.app_id}')">
+                        📋 Details
+                    </button>
+                </div>
+            `;
+
+            this.deprecatedAppsList.appendChild(item);
+        }
+    }
+
+    /**
+     * Render schema history
+     */
+    renderSchemaHistory(history) {
+        if (!history || history.length === 0) {
+            this.schemaHistoryList.innerHTML = '<p class="no-data">No schema changes recorded yet.</p>';
+            return;
+        }
+
+        this.schemaHistoryList.innerHTML = '';
+
+        for (const change of history) {
+            const item = document.createElement('div');
+            item.className = 'schema-change-item';
+
+            const changeDate = change.changed_at ? new Date(change.changed_at).toLocaleString() : 'Unknown';
+            const changeTypeClass = (change.change_type || 'unknown').toLowerCase().replace(/\s+/g, '_');
+            const affectedApps = change.affected_apps ? JSON.parse(change.affected_apps) : [];
+
+            item.innerHTML = `
+                <div class="schema-change-header">
+                    <span class="schema-change-table">📋 ${this.escapeHtml(change.table_name)}</span>
+                    <span class="schema-change-type ${changeTypeClass}">${this.escapeHtml(change.change_type)}</span>
+                </div>
+                <div class="schema-change-meta">
+                    <span>📅 ${changeDate}</span>
+                    ${change.changed_by_app ? `<span>🤖 By: ${this.escapeHtml(change.changed_by_app)}</span>` : ''}
+                </div>
+                ${affectedApps.length > 0 ? `
+                    <div class="affected-apps-list">
+                        <div class="affected-apps-label">Affected apps:</div>
+                        <div class="affected-apps-tags">
+                            ${affectedApps.map(appId => `<span class="affected-app-tag">${this.escapeHtml(appId)}</span>`).join('')}
+                        </div>
+                    </div>
+                ` : ''}
+            `;
+
+            this.schemaHistoryList.appendChild(item);
+        }
+    }
+
+    /**
+     * Update deprecated count badge
+     */
+    updateDeprecatedCount(count) {
+        if (this.deprecatedCount) {
+            this.deprecatedCount.textContent = count;
+            this.deprecatedCount.style.display = count > 0 ? 'inline' : 'none';
+        }
+    }
+
+    /**
+     * Switch registry tabs
+     */
+    switchRegistryTab(tabName) {
+        // Update tab buttons
+        document.querySelectorAll('.registry-tab').forEach(tab => {
+            tab.classList.toggle('active', tab.dataset.tab === tabName);
+        });
+
+        // Update tab content
+        document.getElementById('allAppsTab').style.display = tabName === 'all-apps' ? 'block' : 'none';
+        document.getElementById('deprecatedAppsTab').style.display = tabName === 'deprecated-apps' ? 'block' : 'none';
+        document.getElementById('schemaHistoryTab').style.display = tabName === 'schema-history' ? 'block' : 'none';
+    }
+
+    /**
+     * Show dependency map modal
+     */
+    async showDependencyMap() {
+        this.dependencyMapModal.style.display = 'flex';
+        this.dependencyMapContent.innerHTML = '<p class="no-data">Loading dependency map...</p>';
+
+        try {
+            const result = await window.electronAPI.getDependencyMap();
+
+            if (result.success && result.dependencyMap) {
+                this.renderDependencyMap(result.dependencyMap);
+            } else {
+                this.dependencyMapContent.innerHTML = '<p class="no-data">No dependency data available.</p>';
+            }
+        } catch (error) {
+            window.rendererLogger.error('Failed to load dependency map:', error);
+            this.dependencyMapContent.innerHTML = '<p class="no-data">Failed to load dependency map.</p>';
+        }
+    }
+
+    /**
+     * Render dependency map
+     */
+    renderDependencyMap(map) {
+        if (!map.tableToApps || Object.keys(map.tableToApps).length === 0) {
+            this.dependencyMapContent.innerHTML = '<p class="no-data">No dependencies recorded yet.</p>';
+            return;
+        }
+
+        let html = '';
+
+        // Tables section
+        html += `
+            <div class="dependency-section">
+                <h4>📊 Tables & Their Apps</h4>
+                <table class="dependency-table">
+                    <thead>
+                        <tr>
+                            <th>Table</th>
+                            <th>Apps Using</th>
+                            <th>Access Types</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+        `;
+
+        for (const [tableName, apps] of Object.entries(map.tableToApps)) {
+            const appsList = apps.map(a => this.escapeHtml(a.app_id)).join(', ');
+            const accessTypes = [...new Set(apps.map(a => a.access_type))];
+
+            html += `
+                <tr>
+                    <td><strong>${this.escapeHtml(tableName)}</strong></td>
+                    <td>${appsList || 'None'}</td>
+                    <td>${accessTypes.map(t => `<span class="access-type ${t}">${t}</span>`).join(' ')}</td>
+                </tr>
+            `;
+        }
+
+        html += `
+                    </tbody>
+                </table>
+            </div>
+        `;
+
+        // Apps section
+        if (map.appToTables && Object.keys(map.appToTables).length > 0) {
+            html += `
+                <div class="dependency-section">
+                    <h4>📱 Apps & Their Tables</h4>
+                    <table class="dependency-table">
+                        <thead>
+                            <tr>
+                                <th>App</th>
+                                <th>Tables Used</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+            `;
+
+            for (const [appId, tables] of Object.entries(map.appToTables)) {
+                const tablesList = tables.map(t => this.escapeHtml(t.table_name)).join(', ');
+
+                html += `
+                    <tr>
+                        <td><strong>${this.escapeHtml(appId)}</strong></td>
+                        <td>${tablesList || 'None'}</td>
+                    </tr>
+                `;
+            }
+
+            html += `
+                        </tbody>
+                    </table>
+                </div>
+            `;
+        }
+
+        this.dependencyMapContent.innerHTML = html;
+    }
+
+    /**
+     * Close dependency map modal
+     */
+    closeDependencyMap() {
+        this.dependencyMapModal.style.display = 'none';
+    }
+
+    /**
+     * Regenerate a single deprecated app
+     */
+    async regenerateApp(appId) {
+        if (!appId) return;
+
+        // Show regeneration modal
+        this.regenerationModal.style.display = 'flex';
+        this.regenerationStatus.textContent = 'Regenerating app with updated schema context...';
+        this.regenerationProgress.textContent = '';
+
+        try {
+            const result = await window.electronAPI.regenerateApp(appId);
+
+            if (result.success) {
+                this.regenerationStatus.textContent = 'Regeneration complete!';
+                this.regenerationProgress.textContent = result.description || 'App has been updated.';
+
+                this.showNotification(`App "${appId}" regenerated successfully!`, 'success');
+
+                // Refresh the registry after a short delay
+                setTimeout(() => {
+                    this.regenerationModal.style.display = 'none';
+                    this.loadAppRegistry();
+                }, 2000);
+            } else {
+                throw new Error(result.error || 'Regeneration failed');
+            }
+        } catch (error) {
+            window.rendererLogger.error('Failed to regenerate app:', error);
+            this.regenerationStatus.textContent = 'Regeneration failed';
+            this.regenerationProgress.textContent = error.message;
+            this.showNotification(`Failed to regenerate app: ${error.message}`, 'error');
+
+            setTimeout(() => {
+                this.regenerationModal.style.display = 'none';
+            }, 3000);
+        }
+    }
+
+    /**
+     * Regenerate all deprecated apps
+     */
+    async regenerateAllDeprecatedApps() {
+        try {
+            const result = await window.electronAPI.getRegeneratableApps();
+
+            if (!result.success || !result.apps || result.apps.length === 0) {
+                this.showNotification('No apps available for regeneration', 'info');
+                return;
+            }
+
+            const apps = result.apps;
+            let successCount = 0;
+            let failCount = 0;
+
+            this.regenerationModal.style.display = 'flex';
+
+            for (let i = 0; i < apps.length; i++) {
+                const app = apps[i];
+                this.regenerationStatus.textContent = `Regenerating ${app.app_name || app.app_id}...`;
+                this.regenerationProgress.textContent = `Progress: ${i + 1} / ${apps.length}`;
+
+                try {
+                    const regenResult = await window.electronAPI.regenerateApp(app.app_id);
+                    if (regenResult.success) {
+                        successCount++;
+                    } else {
+                        failCount++;
+                    }
+                } catch (e) {
+                    failCount++;
+                    window.rendererLogger.error(`Failed to regenerate ${app.app_id}:`, e);
+                }
+            }
+
+            this.regenerationStatus.textContent = 'Regeneration complete!';
+            this.regenerationProgress.textContent = `${successCount} succeeded, ${failCount} failed`;
+
+            this.showNotification(`Regenerated ${successCount} apps`, successCount > 0 ? 'success' : 'warning');
+
+            setTimeout(() => {
+                this.regenerationModal.style.display = 'none';
+                this.loadAppRegistry();
+            }, 2000);
+        } catch (error) {
+            window.rendererLogger.error('Failed to regenerate apps:', error);
+            this.showNotification('Failed to regenerate apps', 'error');
+            this.regenerationModal.style.display = 'none';
+        }
+    }
+
+    /**
+     * Show app details (placeholder for now)
+     */
+    async showAppDetails(appId) {
+        try {
+            const result = await window.electronAPI.getAppInfo(appId);
+
+            if (result.success && result.app) {
+                const app = result.app;
+                const details = `
+App: ${app.app_name || app.app_id}
+Status: ${app.status}
+Description: ${app.description || 'N/A'}
+Created: ${app.created_at || 'Unknown'}
+Version: ${app.version || 1}
+${app.deprecation_reason ? `Deprecation Reason: ${app.deprecation_reason}` : ''}
+${app.original_prompt ? `Has Original Prompt: Yes` : `Has Original Prompt: No`}
+                `.trim();
+
+                alert(details);
+            } else {
+                this.showNotification('Could not load app details', 'error');
+            }
+        } catch (error) {
+            window.rendererLogger.error('Failed to load app details:', error);
+            this.showNotification('Failed to load app details', 'error');
+        }
+    }
+
+    /**
+     * Escape HTML to prevent XSS
+     */
+    escapeHtml(text) {
+        if (!text) return '';
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
     }
 
     /**
